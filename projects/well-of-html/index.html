@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <script src="bower_components/jquery/dist/jquery.min.js"></script>
+    <link rel="stylesheet" href="bower_components/bootstrap/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="bower_components/bootstrap/dist/css/bootstrap-theme.min.css">
+    <link rel="stylesheet" href="css/custom.css" type="text/css" />
+    <script src="bower_components/bootstrap/dist/js/bootstrap.min.js"></script>
+    <script type="text/javascript" src="bower_components/notes/notes.js"></script>
+    <title>A Well of HTML</title>
+    <style type="text/css">
+        
+        
+    form {
+    /* Just to center the form on the page, use: margin: 0 auto;*/
+    margin: 20px;
+    width: 400px;
+    /* To see the outline of the form */
+    padding: 13px;
+    border: 20px solid red;
+    border-radius: 1em;
+}
+    form textarea {
+    /* To properly align multiline text fields with their labels */
+    vertical-align: top;
+    /* To give enough room to type some text */
+    height: 5em;
+    /* To allow users to resize any textarea vertically
+    It does not work on every browsers */
+    resize: vertical;
+}
+    form label {
+    /* To make sure that all labels have the same size and are properly aligned */
+    display: inline-block;
+    width: 90px;
+}
+    table {
+    margin: 20px;
+    }
+
+    table,   
+    th,
+    td {
+        
+        padding: 2px;
+        border: 10px solid green;
+    }
+ bgimg {
+    background-image: url('img/cherries.jpg');
+     width:1920px;
+    height:1080px;
+ }  
+ 
+.wrapper {
+  display: -webkit-box;
+  display: -moz-box;
+  display: -ms-flexbox;
+  display: -webkit-flex;
+  display: flex;
+  -webkit-flex-flow: row wrap;
+  flex-flow: row wrap;
+  font-weight: bold;
+  text-align: center;
+}
+
+.wrapper > * {
+  padding: 10px;
+  flex: 1 100%;
+}
+
+.header {
+  background: red;
+}
+
+.footer {
+  background: lightgreen;
+}
+
+.main {
+  text-align: left;
+  background: deepskyblue;
+}
+
+.aside-1 {
+  background: gold;
+}
+
+.aside-2 {
+  background: hotpink;
+}
+
+@media all and (min-width: 600px) {
+  .aside {
+    flex: 1 auto;
+  }
+}
+@media all and (min-width: 800px) {
+  .main {
+    flex: 3 0px;
+  }
+
+  .aside-1 {
+    order: 1;
+  }
+
+  .main {
+    order: 2;
+  }
+
+  .aside-2 {
+    order: 3;
+  }
+
+  .footer {
+    order: 4;
+  }
+}
+body {
+  padding: 2em;
+}
+ 
+ .example-grid {
+    margin: 20px;
+}
+
+.row-img {
+    margin: 4px;
+}
+ 
+    </style>
+</head>
+
+<body>
+    <div id="container" class="container">
+         <!--ALL YOUR MARKUP GOES BELOW HERE -->
+       
+        <a href="https://en.wikipedia.org/wiki/Death">This link is AWSOME!!!!</a>
+        
+        <img src="img/cherries.jpg" />
+        
+        <h1><small>1</small></h1>
+        <h2>2</h2>
+        <h3>3</h3>
+        <h4>4</h4>
+        <h5>5</h5>
+        <h6>6</h6>
+        
+        <p><b>When can the normal silver snow this fair case? Beneath an appalled caffeine scratches the mutual envelope. The truth bicycles. The chemical barrel retracts above an academic oil. Her heroin twists before its female sin. The cracking evil dices the opposed gut.
+            </b></p>
+        
+        <p><i>Will a tax bow? A harden graduates throughout the photo. A work fasts above the sitting nail. On top of the case breathes the barrier. Can an atmospheric sail lump the patched stack? A successor stomachs the muttering bulb.
+            </i></p>
+        
+        <p><em>Should the every sore despair? An ignorant attitude repeats the spokesman. The drastic flag motivates the questionnaire near your cozy interference. The cow expands above the cyclist. Whatever implicit luxury twists next to a borderline. A noble introduces the geographical lump beside the dive.
+            </em></p>
+        
+        <ul>
+            <li>First</li>
+            <li>Second</li>
+            <li>Third</li>
+        </ul>
+        <ol>
+            <li>Forth</li>
+            <li>Fifth</li>
+            <li>Sixth</li>
+        </ol>
+        
+        <dl>
+          <dt>Canada</dt>
+          <dd>A very cold country</dd>
+          <dt>Brazil</dt>
+          <dd>A very warm country</dd>
+        </dl>
+        
+        
+        
+    <form class="form">
+        <div>
+            <label for="name">User Name:</label>
+            <input type="text" id="name" />
+        </div>
+        <div>
+            <label for="mail">E-mail:</label>
+            <input type="email" id="mail" />
+        </div>
+        <div>
+            <label for="code">Code:</label>
+            <input type="password" id="code" />
+        </div>
+        <div>
+            <label for="msg">Message:</label>
+            <textarea id="msg"></textarea>
+        </div>
+    
+        <div class="button">
+            <button type="submit">Send your message</button>
+        </div>
+    </form>
+    
+    
+    <table>
+    <thead>
+        <tr>
+            <th>Gamertag</th>
+            <th>Gamer Score</th>
+        </tr>
+    </thead>
+    <tfoot>
+        <tr>
+            <td colspan="2">Gamer Score for Xbox</td>
+        </tr>
+    </tfoot>
+    <tbody>
+        <tr>
+            <td>RGC Carnage</td>
+            <td>58493</td>
+        </tr>
+        <tr>
+            <td>RGC Visionz</td>
+            <td>48503</td>
+        </tr>
+        <tr>
+            <td>RGC Odessy</td>
+            <td>12343</td>
+        </tr>
+        <tr>
+            <td>RGC Prodigy</td>
+            <td>20394</td>
+        </tr>
+    </tbody>
+</table>
+    
+    <div>Dragon Ball Z</div>
+     <div>One Piece</div>
+      <div>Naruto</div>
+      <div>Jackie Chan</div>
+      <div>ABCDEFGHIJKLMNOPQRSTUVWXYZ</div>
+       <div class="bgimg"></div>
+       
+       
+       <div class="wrapper">
+  <header class="header">Header</header>
+  <article class="main">
+    <p> <a href="http://giphy.com/gifs/9umH7yTO8gLYY">Teamwork is essential. It gives them another target to shoot at.</a></p>  
+  </article>
+  <aside class="aside aside-1"><a href="http://giphy.com/gifs/deadpooledit-O5zMZYYguMu4M">Choice 1</a></aside>
+  <aside class="aside aside-2"><a href="http://giphy.com/gifs/1jARfPtdz7eE0">Choice 2</a></aside>
+  <footer class="footer">Footer</footer>
+</div>
+
+<div class="example-grid">
+  <div class="row">
+      <div class="col-md-2"><img src="img/cherries.jpg" class="row-img"></img>
+      </div>
+      <div class="col-md-10">Cherries are tasty things that grow on trees! You can eat them and feel good about yourself!</div>
+  </div>
+  <div class="row">
+      <div class="col-md-2"><img src="img/black-currant.jpg" class="row-img"></img>
+      </div>
+      <div class="col-md-10">Black Currents are tasty things that grow on bushes! You can eat them and feel good about yourself!</div>
+  </div>
+  <div class="row">
+      <div class="col-md-2"><img src="img/bat.jpg" class="row-img"></img>
+      </div>
+      <div class="col-md-10"><b><large>Im Batman!!!!!</large></b></div>
+  </div>
+</div>
+
+
+        
+        <!-- ALL YOUR MARKUP GOES ABOVE HERE -->
+    </div>
+    <script>
+        $(function () {
+            window.opspark.notes.show();
+        });
+    </script>
+</body>
+
+</html>
+
