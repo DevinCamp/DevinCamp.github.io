@@ -53,19 +53,3 @@ $(document).ready(function () {
 
 
 
-
-
-
-
-
-// function display(array){
-//           $('main').empty();
-//           if(array.length===0){
-//               $('<div>').text('No Items Found').attr('class','text-center').css('font-size','20px').css('font-weight','bold').appendTo('main');
-//           }
-//           _.each(array, function(product){
-//               let row = $('<article>').attr('class','row').css('border-bottom','1px dotted #ccc');    /////hyperlink
-//               let thumbnail = 'img/product/thumbs/'+ product.image;
-//               $('<img>').attr('src',thumbnail).attr('class','col-md-2').appendTo(row);
-//               let mainDesc = $('<section>').attr('class','col-md-6').appendTo(row);
-//               $('<a>').text(product.desc).appendTo(mainDesc);
