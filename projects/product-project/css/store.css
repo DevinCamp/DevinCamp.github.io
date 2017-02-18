@@ -1,5 +1,5 @@
 body{
-  background: gray
+  background: url(star.jpg)
  
 }
 #search {
@@ -76,6 +76,9 @@ body{
 .row {
   border-bottom:  dashed 5px ;
   box-shadow: 10px 10px 5px #888888;
-  background-image: url(black.jpg)
+  background-image: url(back.jpg)
   
+}
+#search-button{
+  border-radius: 0%;
 }

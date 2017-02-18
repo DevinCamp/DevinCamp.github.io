@@ -56,7 +56,7 @@ function display(list) {
         else {
             $('<section>').text(list.stock + " left in-stock").css('color', 'white').appendTo(mainDesc);
         }
-        //  $('<button>').text("Buy").appendTo(row).on('click',function(event){alert('You bought this item'+product.desc)}).attr('class','text-center');
+         //$('<button>').text("Buy Now").appendTo(row).on('click',function(event){alert('You bought this item  '+list.desc)}).attr('class','text-center');
     });
 
 }
