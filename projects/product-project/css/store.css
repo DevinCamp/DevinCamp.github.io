@@ -1,7 +1,5 @@
 body{
- background-color: #d7d7d7;
- 
- 
+  background: gray
  
 }
 #search {
@@ -10,7 +8,7 @@ body{
 
 
 #search input[type="text"] {
-    background: url(search-white.png) no-repeat 10px 6px #444;
+   background: url(search-white.png) no-repeat 10px 6px #444;
     border: 0 none;
     font: bold 12px Arial,Helvetica,Sans-serif;
     color: #d7d7d7;
@@ -63,4 +61,21 @@ body{
   background-color: white;
   z-index: 1002;
   overflow: auto;
+}
+.button {
+  font-size: 1em;
+  padding: 10px;
+  color: #fff;
+  border: 2px solid #06D85F;
+  border-radius: 20px/50px;
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.3s ease-out;
+}
+
+.row {
+  border-bottom:  dashed 5px ;
+  box-shadow: 10px 10px 5px #888888;
+  background-image: url(black.jpg)
+  
 }
