@@ -25,6 +25,7 @@ body{
     -moz-transition: all 0.7s ease 0s;
     -o-transition: all 0.7s ease 0s;
     transition: all 0.7s ease 0s;
+    /*margin-right: 20px*/
     }
 
 #search input[type="text"]:focus {
@@ -74,11 +75,35 @@ body{
 }
 
 .row {
-  border-bottom:  dashed 5px ;
-  box-shadow: 10px 10px 5px #888888;
-  background-image: url(back.jpg)
+  /*border-bottom:  dashed 5px ;*/
+  /*box-shadow: 10px 10px 5px  #888888;*/
+  /*background-image: url(back.jpg);*/
+  margin-bottom: 20px;
+  -webkit-box-shadow: 9px 6px 20px 26px rgba(0,0,0,0.75);
+-moz-box-shadow: 9px 6px 20px 26px rgba(0,0,0,0.75);
+box-shadow: 9px 6px 20px 26px rgba(0,0,0,0.75);
+  
   
 }
 #search-button{
-  border-radius: 50%;
+ border-radius: 200px 200px 200px 200px;
+-moz-border-radius: 200px 200px 200px 200px;
+-webkit-border-radius: 200px 200px 200px 200px;
+border: 1px solid #000000;
+/*margin-left: 5px*/
+}
+.modal-content{
+  background:url(apple.jpg);
+}
+#title{
+  color: white
+  
+}
+#Bbutton{
+   border-radius: 200px 200px 200px 200px;
+-moz-border-radius: 200px 200px 200px 200px;
+-webkit-border-radius: 200px 200px 200px 200px;
+border: 1px solid #000000;
+margin-left: 40px;
+
 }

@@ -28,26 +28,23 @@ $(document).ready(function() {
          let $topRatedImage = $('<img>').attr('id', 'top-rated-image').attr('class', 'image').attr('src', topRated[0].art);
          $topRatedImage.appendTo('#sidebar');
         
-         let $top = _.map(topRated, function(recording) {
-             let $art = recording.art;
+         _.map(topRated, function(recording) {
+             
              return $section.append($('<li>').attr('class', 'top-recording')
                  .append($('<div>').text("Title: " + recording.title))
                  .append($('<div>').text("Artist: " + recording.artist))
                  .append($('<div>').text("Release: " + recording.release))
-                 .append($('<div>').text("Year: " + recording.year))).appendTo('#sidebar');
+                 .append($('<div>').text("Year: " + recording.year))
+                 .attr('src', recording.art)).appendTo('#sidebar');
                  
                  
         });
-                                                        // clicks on list item //
-        //  _.each($top,function(x){
-        //         ('.top-recording').on('click',function(event){
-                   
-        //           //////clicks, cause photo to self-identify index in top rated charts
-                   
-        //             $('#top-rated-image').attr('src', topRated[_.indexOf($top,x)].art);
-        //         }).appendTo(x);
-        //     })
-          
+                                                        // clicks on list item of top rated//
+       $('.top-recording').on('click', function(e) {
+                if ($(e.target).parent().hasClass('top-recording')) { 
+                return $('#top-rated-image').attr('src', $(this).attr('src'));
+                }
+            });
        
         
         
@@ -65,24 +62,26 @@ $(document).ready(function() {
          $sectionlist.appendTo($('#section-recordings'));
 
                                                              //RECORDINGS
-       let $rec = _.map(recordings, function(recording) {
+    _.map(recordings, function(recording) {
            
             return $sectionlist.append($('<li>').attr('class', 'recording')
                  .append($('<div>').text("Title: " + recording.title))
                  .append($('<div>').text("Artist: " + recording.artist))
                  .append($('<div>').text("Release: " + recording.release))
-                 .append($('<div>').text("Year: " + recording.year)));
+                 .append($('<div>').text("Year: " + recording.year))
+                 .attr('src', recording.art));
                  
          });
+         
+         
+         
+            $('.recording').on('click', function(e) {
+                if ($(e.target).parent().hasClass('recording')) { 
+                return $('#recording-image').attr('src', $(this).attr('src'));
+                }
+            });
            
-        //          $('.recording').on('click', function(event) {
-        //      $('#recording-image').fadeOut(400, function(event) {
-                 
-                    
-        //               $('#recording-image').attr('src', );
-        //          })
-        //          .fadeIn(500);
-        //  });
+       
         
         
                                                         // Image change  //
@@ -115,7 +114,7 @@ $(document).ready(function() {
          
          
                                                     //  Table  //
- var createTable = function(itemList) {
+ var createTable = function(list) {
      var createRow = function(item) {
          var $row = $("<tr>");
          var $drum = $("<td>").text(item.type);
@@ -125,7 +124,7 @@ $(document).ready(function() {
          return $row;
      };
      var $table = $("<table>");
-     var $rows = itemList.map(createRow);
+     var $rows = list.map(createRow);
      $table.append($rows);
      return $table;
  };

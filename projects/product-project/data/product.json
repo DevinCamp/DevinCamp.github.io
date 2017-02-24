@@ -38,7 +38,7 @@
         "price": 699.99,
         "color": "White Pearl",
         "availableColors": ["Black", "Gold", "White Pearl"],
-        "specs": [
+        "specs": [ "N/A"
             ],
         "stock": 16
     },
@@ -75,7 +75,7 @@
         "stock": 54
     },
     {
-        "id": 5,
+        "id": 6,
         "type": "case",
         "image": "galaxy6-case-green.jpg",
         "desc": "Samsung Galaxy S6 case, Nupro Lightweight Protective Snap-on Case for Galaxy S6 - Mint",
@@ -90,7 +90,7 @@
         "stock": 9
     },
     {
-        "id": 6,
+        "id": 7,
         "type": "case",
         "image": "galaxy6-case-black.jpg",
         "desc": "Samsung Galaxy S6 case, Nupro Lightweight Protective Snap-on Case for Galaxy S6 - Black",
@@ -105,7 +105,7 @@
         "stock": 9
     },
     {
-        "id": 7,
+        "id": 8,
         "type": "phone",
         "image": "iphone-6-silver.jpg",
         "desc": "Apple iPhone 6, Silver, 16 GB (Unlocked)",
@@ -122,7 +122,7 @@
         "stock": 9
     },
     {
-        "id": 8,
+        "id": 9,
         "type": "phone",
         "image": "iphone-6-plus-black.jpg",
         "desc": "Apple iPhone 6 Plus 64GB 4G LTE Factory Unlocked GSM Smartphone - Space Gray",
@@ -140,7 +140,7 @@
         "stock": 5
     },
     {
-        "id": 9,
+        "id": 10,
         "type": "case",
         "image": "iphone-6-case-green.jpg",
         "desc": "iPhone 6 Case, Lumsing™ Hybrid High Impact Dual Layer Armor Defender Case Protective Cover for Apple iPhone 6 (4.7 inch Screen) with Screen Protector (Mint Green-Grey)",
@@ -157,7 +157,7 @@
         "stock": 3
     },
     {
-        "id": 10,
+        "id": 11,
         "type": "case",
         "image": "iphone-6-plus-case-gold.jpg",
         "desc": "6 Plus Case, iPhone 6 Plus Case, SGM (TM) [Slim Hybrid] Case for iphone 6 Plus 5.5 [Clear Case] - iPhone 6 Plus Bumper Case - With SGM (TM) Microfiber Cleaning Cloth (Hot Pink)",
