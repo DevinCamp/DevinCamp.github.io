@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#0b0e13">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon-192.png">
@@ -19,7 +19,11 @@
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); overflow: hidden;
     font: 13px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-  body { display: flex; flex-direction: column; }
+  body { display: flex; flex-direction: column; height: 100vh; height: 100dvh; overscroll-behavior: none;
+    -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none;
+    padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
+  #gear { display: none; font-size: 17px; line-height: 1; padding: 6px 9px; }
+  canvas.resize { cursor: ew-resize; }
   header { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 10px 14px;
     border-bottom: 1px solid var(--line); background: var(--panel); }
   .price { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; min-width: 130px; transition: color .25s; }
@@ -51,13 +55,38 @@
   canvas { touch-action: none; }
   header { padding-top: max(10px, env(safe-area-inset-top)); padding-left: max(14px, env(safe-area-inset-left)); padding-right: max(14px, env(safe-area-inset-right)); }
   #walls { padding-bottom: max(8px, env(safe-area-inset-bottom)); }
-  @media (max-width: 700px) {
-    header { gap: 8px 12px; padding: 8px 10px; padding-top: max(8px, env(safe-area-inset-top)); }
-    .price { font-size: 19px; min-width: 0; }
-    .controls { margin-left: 0; gap: 6px 10px; width: 100%; }
-    .meter { width: 80px; }
-    #walls { gap: 4px 14px; font-size: 12px; padding: 6px 10px; padding-bottom: max(6px, env(safe-area-inset-bottom)); }
+  /* ---------- phones (portrait or landscape) ---------- */
+  @media (max-width: 700px), (max-height: 500px) {
+    header { position: relative; flex-wrap: nowrap; gap: 12px; padding: 6px 10px;
+      padding-top: max(6px, env(safe-area-inset-top)); overflow-x: auto; scrollbar-width: none; }
+    header::-webkit-scrollbar { display: none; }
+    header > * { flex: none; }
+    .price { font-size: 18px; min-width: 0; }
+    .stat small { font-size: 10px; }
+    .stat { font-size: 12px; }
+    .meter { width: 64px; }
+    #gear { display: block; order: -1; }
+    .controls { display: none; }
+    body.settings .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; position: fixed; z-index: 10;
+      left: 8px; right: 8px; top: calc(max(6px, env(safe-area-inset-top)) + 52px); margin: 0;
+      background: #151a22; border: 1px solid #2a3240; border-radius: 12px; padding: 14px; box-shadow: 0 12px 32px rgba(0,0,0,.5); }
+    body.settings .controls label { font-size: 12px; flex-direction: column; align-items: stretch; gap: 4px; }
+    body.settings .controls label:has(input[type=checkbox]) { flex-direction: row; align-items: center; font-size: 14px; color: var(--text); }
+    body.settings .controls label > span { align-self: flex-end; }
+    body.settings .controls input[type=checkbox] { width: 20px; height: 20px; }
+    body.settings .controls select { font-size: 16px; padding: 6px 8px; }  /* 16px stops iOS zooming on focus */
+    body.settings .controls input[type=range] { width: 100%; }
+    #walls { flex-wrap: nowrap; overflow-x: auto; gap: 16px; font-size: 12px; padding: 6px 10px; min-height: 30px;
+      padding-bottom: max(6px, env(safe-area-inset-bottom)); white-space: nowrap; scrollbar-width: none; }
+    #walls::-webkit-scrollbar { display: none; }
+    #walls .w { flex: none; }
     #help { display: none; }
+  }
+  /* phone on its side: give the chart all the height */
+  @media (max-height: 500px) {
+    header { padding-top: 4px; padding-bottom: 4px; }
+    .stat small { display: none; }
+    #walls { display: none; }
   }
   @media (hover: none) { #help { display: none; } }
   #help { position: absolute; left: 10px; bottom: 82px; font-size: 11px; color: #4d5666; pointer-events: none; }
@@ -69,6 +98,7 @@
     <div style="display:flex;align-items:center;gap:8px"><span id="dot" class="dot"></span><strong id="title">BTC-USD</strong></div>
     <div id="price" class="price">—</div>
   </div>
+  <button id="gear" aria-label="Settings">⚙︎</button>
   <div class="stat"><small>Spread</small><span id="spread">—</span></div>
   <div class="stat"><small>Buyers in view</small><span id="bidTot" style="color:var(--up)">—</span></div>
   <div class="stat"><small>Sellers in view</small><span id="askTot" style="color:var(--down)">—</span></div>
@@ -96,10 +126,11 @@
     </label>
     <label>Wall size <input id="sens" type="range" min="2" max="12" step="0.5" value="4"><span id="sensv">4×</span></label>
     <label><input id="heat" type="checkbox" checked> Heatmap</label>
+    <label><input id="showBook" type="checkbox" checked> Order book</label>
   </div>
 </header>
 <div id="wrap"><canvas id="cv"></canvas><div id="tip"></div>
-  <div id="help">Scroll = zoom time · Shift+scroll or scroll on price axis = zoom price · Drag = pan · Double-click = reset</div></div>
+  <div id="help">Scroll = zoom time · Shift+scroll or scroll on price axis = zoom price · Drag = pan · Drag order-book edge = resize · Double-click = reset</div></div>
 <div id="walls"><span class="hint">Connecting to Coinbase…</span></div>
 
 <script>
@@ -110,7 +141,7 @@ const S = {
   product: "BTC-USD", tf: 60, sens: 4, heat: true,
   bids: new Map(), asks: new Map(), bookReady: false, bookDirty: true,
   candles: [], last: null,
-  ws: null, gen: 0,
+  ws: null, gen: 0, small: false, showBook: true, depthW: 0,
   // view (T = target, plain = displayed; displayed eases toward target every frame)
   v: { center: null, range: 0.01, rangeT: 0.01, cw: 9, cwT: 9, off: 0, offT: 0, last: null },
   calc: null,              // latest bucketed book, walls, totals (recomputed ~12x/sec)
@@ -283,7 +314,11 @@ let dpr = 1, W = 0, H = 0;
 function resize() {
   dpr = window.devicePixelRatio || 1;
   const r = cv.getBoundingClientRect(); W = r.width; H = r.height;
-  const small = W < 700; AXIS_W = small ? 64 : 78; DEPTH_W = small ? Math.max(70, W * 0.18) : 170; VOL_H = small ? 40 : 54;
+  const small = W < 700 || H < 420; S.small = small;
+  AXIS_W = small ? 70 : 78;
+  const autoDepth = small ? Math.round(clamp(W * 0.2, 64, 120)) : 170;
+  DEPTH_W = !S.showBook ? 0 : clamp(S.depthW || autoDepth, 50, Math.max(60, W * 0.45));
+  VOL_H = H < 300 ? 26 : small ? 36 : 54;
   cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
@@ -373,7 +408,8 @@ function frame(dt) {
   ctx.font = "600 11px -apple-system, sans-serif"; ctx.textBaseline = "middle";
   for (const fx of wallsSorted) {
     const yy = y(fx.p), w = fx.w, sell = w.side === "sell";
-    const txt = `${sell ? "SELL" : "BUY"} WALL  ${fmtQ(w.q)} ${base()}  @ ~${fmtP(Math.round(w.p / bStep) * bStep, bStep)}`;
+    const px = fmtP(Math.round(w.p / bStep) * bStep, bStep);
+    const txt = S.small ? `${sell ? "SELL" : "BUY"} ${fmtQ(w.q)} @ ${px}` : `${sell ? "SELL" : "BUY"} WALL  ${fmtQ(w.q)} ${base()}  @ ~${px}`;
     const tw = ctx.measureText(txt).width;
     ctx.globalAlpha = fx.a;
     ctx.fillStyle = "rgba(11,14,19,.85)"; ctx.fillRect(8, yy - 9, tw + 12, 18);
@@ -410,6 +446,7 @@ function frame(dt) {
   ctx.moveTo(0, chartB + 0.5); ctx.lineTo(chartR, chartB + 0.5); ctx.stroke();
 
   // ---- depth panel (eased bars)
+  if (DEPTH_W > 0) {
   const dx = chartR + AXIS_W + 4, dw = DEPTH_W - 10;
   for (const [k, [b, a]] of C.rows) { const d = S.bars.get(k); if (!d) S.bars.set(k, { b: 0, a: 0, tb: b, ta: a }); else { d.tb = b; d.ta = a; } }
   let bMax = 1e-9;
@@ -431,7 +468,10 @@ function frame(dt) {
   }
   ctx.restore();
   ctx.fillStyle = "#7d8696"; ctx.font = "11px -apple-system, sans-serif"; ctx.textBaseline = "top";
-  ctx.fillText(`Order book · ${fmtP(bStep, bStep)} rows`, dx, 2);
+  ctx.fillText(S.small ? `Book · ${fmtP(bStep, bStep)}` : `Order book · ${fmtP(bStep, bStep)} rows`, dx, 2);
+  // grab handle on the panel edge
+  ctx.fillStyle = "#2a3240"; ctx.fillRect(chartR + AXIS_W - 1, chartB / 2 - 18, 3, 36);
+  }
 
   // ---- last price line + tag
   const last = S.candles.at(-1), upTick = last ? v.last >= last.o : true;
@@ -511,6 +551,12 @@ cv.addEventListener("pointermove", e => {
     return;
   }
   S.mouse = pos(e);
+  if (S.drag && S.drag.panel) {
+    S.depthW = clamp(S.drag.w - (S.mouse.x - S.drag.x), 50, W * 0.45); resize();
+    try { localStorage.setItem("walls.depthW", String(S.depthW)); } catch {}
+    return;
+  }
+  if (!S.drag && S.mouse) { const chartR = W - AXIS_W - DEPTH_W; cv.classList.toggle("resize", DEPTH_W > 0 && Math.abs(S.mouse.x - (chartR + AXIS_W)) < 8); }
   if (S.drag) {
     const dxp = S.mouse.x - S.drag.x, dyp = S.mouse.y - S.drag.y;
     const slot = S.v.cw * 1.33;
@@ -521,13 +567,27 @@ cv.addEventListener("pointermove", e => {
 cv.addEventListener("pointerdown", e => {
   if (e.pointerType === "touch") { touches.set(e.pointerId, pos(e)); if (touches.size === 2) { S.drag = null; return; } }
   const p = pos(e), chartR = W - AXIS_W - DEPTH_W;
+  if (DEPTH_W > 0 && Math.abs(p.x - (chartR + AXIS_W)) < (e.pointerType === "touch" ? 18 : 8)) {
+    S.drag = { panel: true, x: p.x, w: DEPTH_W };
+    cv.setPointerCapture(e.pointerId); return;
+  }
   S.drag = { x: p.x, y: p.y, off: S.v.offT, range: S.v.rangeT, price: p.x > chartR };
   cv.setPointerCapture(e.pointerId); cv.classList.add("grab");
 });
-const endDrag = e => { touches.delete(e.pointerId); if (touches.size < 2) pinch = null; S.drag = null; cv.classList.remove("grab"); if (e.pointerType === "touch") S.mouse = null; };
+let tapTimer = 0;
+const endDrag = e => {
+  touches.delete(e.pointerId); if (touches.size < 2) pinch = null;
+  const d = S.drag; S.drag = null; cv.classList.remove("grab");
+  if (e.pointerType === "touch") {
+    const p = pos(e);
+    // a tap (no real movement) shows the price/size readout for a few seconds
+    if (d && !d.panel && Math.hypot(p.x - d.x, p.y - d.y) < 8) { S.mouse = p; clearTimeout(tapTimer); tapTimer = setTimeout(() => { S.mouse = null; }, 4000); }
+    else S.mouse = null;
+  }
+};
 cv.addEventListener("pointerup", endDrag); cv.addEventListener("pointercancel", endDrag);
 cv.addEventListener("pointerleave", () => { if (!S.drag) S.mouse = null; });
-cv.addEventListener("dblclick", () => { S.v.offT = 0; S.v.cwT = 9; S.v.rangeT = 0.01; $("range").value = "0.01"; });
+cv.addEventListener("dblclick", () => { S.v.offT = 0; S.v.cwT = S.small ? 6 : 9; S.v.rangeT = 0.01; $("range").value = "0.01"; S.depthW = 0; try { localStorage.removeItem("walls.depthW"); } catch {} resize(); save(); });
 cv.addEventListener("wheel", e => {
   e.preventDefault();
   const p = pos(e), chartR = W - AXIS_W - DEPTH_W;
@@ -535,10 +595,28 @@ cv.addEventListener("wheel", e => {
   if (e.shiftKey || p.x > chartR) { S.v.rangeT = clamp(S.v.rangeT * f, 0.0008, 0.12); $("range").value = ""; }
   else S.v.cwT = clamp(S.v.cwT / f, 2, 36);
 }, { passive: false });
-window.addEventListener("resize", resize);
+new ResizeObserver(() => resize()).observe($("wrap"));
+window.addEventListener("orientationchange", () => setTimeout(resize, 250));
+$("gear").onclick = e => { e.stopPropagation(); document.body.classList.toggle("settings"); };
+cv.addEventListener("pointerdown", () => document.body.classList.remove("settings"));
+$("showBook").onchange = e => { S.showBook = e.target.checked; save(); resize(); };
+function save() { try { localStorage.setItem("walls.prefs", JSON.stringify({ product: S.product, tf: S.tf, sens: S.sens, heat: S.heat, showBook: S.showBook, range: S.v.rangeT })); } catch {} }
+function loadPrefs() {
+  try {
+    const p = JSON.parse(localStorage.getItem("walls.prefs") || "{}");
+    if (p.product) { S.product = p.product; $("product").value = p.product; }
+    if (p.tf) { S.tf = p.tf; $("tf").value = String(p.tf); }
+    if (p.sens) { S.sens = p.sens; $("sens").value = p.sens; $("sensv").textContent = p.sens + "×"; }
+    if (p.heat === false) { S.heat = false; $("heat").checked = false; }
+    if (p.showBook === false) { S.showBook = false; $("showBook").checked = false; }
+    if (p.range) { S.v.rangeT = S.v.range = p.range; $("range").value = [0.0025,0.005,0.01,0.02,0.05].includes(p.range) ? String(p.range) : ""; }
+    const dw = +localStorage.getItem("walls.depthW"); if (dw) S.depthW = dw;
+  } catch {}
+}
+for (const id of ["product", "tf", "range", "sens", "heat"]) $(id).addEventListener("change", () => setTimeout(save, 0));
 
 // ======================= loops =======================
-resize(); restart();
+loadPrefs(); resize(); if (S.small) S.v.cw = S.v.cwT = 6; restart();
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) navigator.serviceWorker.register("sw.js").catch(() => {});
 setInterval(() => { if (S.bookReady && S.last) recalc(); }, 80);
 setInterval(hmSample, 250);
