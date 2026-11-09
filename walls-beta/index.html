@@ -403,7 +403,7 @@ function computeRTI() {
   const thin = (sumA < sumB ? asks : bids).map(l => l[1]);
   let s = Math.min(sLev, kdeMode(thin));
   if (!(s > 0)) s = sLev;
-  const MAXSTEPS = 200000; s = Math.max(s, Math.min(sumA, sumB) / MAXSTEPS);
+  const MAXSTEPS = 20000; s = Math.max(s, Math.min(sumA, sumB) / MAXSTEPS);
   // walk mid price-volume curve out to the 0.5% utilized depth
   const mids = [];
   let ja = 0, jb = 0, ca = asks[0][1], cb = bids[0][1];
@@ -423,9 +423,9 @@ function computeRTI() {
   return { v: Math.round(num / den * 100) / 100, used: use.map(e => e.name), total: EX.length };
 }
 function winsor(arr) {
-  const s = arr.slice().sort((a, b) => a - b), n = s.length, k = Math.floor(0.01 * n);
+  const s = Float64Array.from(arr).sort(), n = s.length, k = Math.floor(0.01 * n);
   let tm = 0; for (let i = k; i < n - k; i++) tm += s[i]; tm /= Math.max(1, n - 2 * k);
-  const w = s.map((x, i) => i < k ? s[k] : i >= n - k ? s[n - k - 1] : x);
+  const w = s.map((x, i) => i < k ? s[k] : i >= n - k ? s[n - k - 1] : x);   // still sorted
   const wm = w.reduce((a, b) => a + b, 0) / n;
   let ss = 0; for (const x of w) ss += (x - wm) ** 2;
   return { trimMean: tm, sd: n > 1 ? Math.sqrt(ss / (n - 1)) : 0, w };
@@ -433,7 +433,7 @@ function winsor(arr) {
 function kdeMode(sizes) {
   if (!sizes.length) return Infinity;
   const { w, sd } = winsor(sizes);
-  const sorted = w.slice().sort((a, b) => a - b);
+  const sorted = w;
   if (w.length < 4 || !(sd > 0)) return sorted[0];
   const n = w.length, bw = 1.06 * sd * Math.pow(n, -0.2);
   const lo = sorted[0], hi = sorted[n - 1], G = 256, bins = new Float64Array(G);
@@ -931,7 +931,7 @@ for (const id of ["product", "tf", "range", "sens", "heat"]) $(id).addEventListe
 // ======================= loops =======================
 loadPrefs(); resize(); if (S.small) S.v.cw = S.v.cwT = 6; restart();
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) navigator.serviceWorker.register("sw.js").catch(() => {});
-setInterval(indexTick, 200);
+setInterval(indexTick, 500);
 window.__walls = { S, IX, EX };   // handy for debugging in the browser console
 setInterval(() => { if (S.last && viewBooks().length) recalc(); }, 80);
 setInterval(hmSample, 250);
