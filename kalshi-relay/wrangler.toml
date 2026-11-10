@@ -1,0 +1,20 @@
+# Kalshi official-index relay for the Live Walls Chart app.
+# Secrets (set in the Cloudflare dashboard, never in this file):
+#   KALSHI_KEY_ID       – the Kalshi API key ID (use a READ-ONLY key)
+#   KALSHI_PRIVATE_KEY  – contents of the private key file Kalshi gave you
+#   RELAY_CODE          – any access code; the app must send the same code
+name = "kalshi-relay"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+[vars]
+INDICES = "BRTI,ETHUSD_RTI,SOLUSD_RTI,XRPUSD_RTI,DOGEUSD_RTI"
+KALSHI_WS_URL = "https://external-api-ws.kalshi.com/trade-api/ws/v2"
+
+[[durable_objects.bindings]]
+name = "RELAY"
+class_name = "Relay"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Relay"]

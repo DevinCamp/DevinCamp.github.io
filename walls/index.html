@@ -29,6 +29,18 @@
   body:not(.kalshi) .kal { display: none; }
   body.kalshi .cbo { display: none; }
   #kTarget { color: #f5c451; }
+  .badge { font-size: 10px; font-weight: 700; letter-spacing: .04em; padding: 2px 6px; border-radius: 4px; background: #262c38; color: var(--muted); margin-left: 6px; }
+  .badge.official { background: #123528; color: #4fe0ad; }
+  #relayDlg { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 16px; }
+  #relayDlg[hidden] { display: none; }
+  .dlg { background: #151a22; border: 1px solid #2a3240; border-radius: 14px; padding: 18px; width: min(440px, 100%); display: flex; flex-direction: column; gap: 12px; box-shadow: 0 20px 50px rgba(0,0,0,.6); -webkit-user-select: text; user-select: text; }
+  .dlg h3 { margin: 0; font-size: 16px; }
+  .dlg p { margin: 0; font-size: 13px; }
+  .dlg label { flex-direction: column; align-items: stretch; gap: 5px; font-size: 12px; }
+  .dlg input { background: #0f1319; color: var(--text); border: 1px solid #2a3240; border-radius: 8px; padding: 9px 10px; font-size: 16px; }
+  .dlg .row { display: flex; gap: 8px; }
+  .dlg .primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  #relayStatus.ok { color: var(--up); } #relayStatus.bad { color: var(--down); }
   .up { color: var(--up); } .down { color: var(--down); }
   #gear { display: none; font-size: 17px; line-height: 1; padding: 6px 9px; }
   canvas.resize { cursor: ew-resize; }
@@ -103,7 +115,7 @@
 <body>
 <header>
   <div>
-    <div style="display:flex;align-items:center;gap:8px"><span id="dot" class="dot"></span><strong id="title">BTC-USD</strong></div>
+    <div style="display:flex;align-items:center;gap:8px"><span id="dot" class="dot"></span><strong id="title">BTC-USD</strong><span id="badge" class="kal badge">ESTIMATE</span></div>
     <div id="price" class="price">—</div>
   </div>
   <div class="seg" id="srcSeg" title="Price source">
@@ -142,11 +154,22 @@
     <label>Wall size <input id="sens" type="range" min="2" max="12" step="0.5" value="4"><span id="sensv">4×</span></label>
     <label><input id="heat" type="checkbox" checked> Heatmap</label>
     <label><input id="showBook" type="checkbox" checked> Order book</label>
+    <button id="relayBtn" type="button">Kalshi official feed…</button>
   </div>
 </header>
 <div id="wrap"><canvas id="cv"></canvas><div id="tip"></div>
   <div id="help">Scroll = zoom time · Shift+scroll or scroll on price axis = zoom price · Drag = pan · Drag order-book edge = resize · Double-click = reset</div></div>
 <div id="walls"><span class="hint">Connecting to Coinbase…</span></div>
+<div id="relayDlg" hidden>
+  <form id="relayForm" class="dlg">
+    <h3>Kalshi official feed</h3>
+    <p class="hint">Connect to your private relay to show the official CF Benchmarks index that Kalshi settles on. Without it, Kalshi mode shows an estimate.</p>
+    <label>Relay address<input id="relayUrl" type="url" placeholder="https://kalshi-relay.yourname.workers.dev" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+    <label>Access code<input id="relayCode" type="password" placeholder="the RELAY_CODE you set" autocomplete="off"></label>
+    <div id="relayStatus" class="hint">Not connected.</div>
+    <div class="row"><button type="button" id="relayOff">Disconnect</button><span style="flex:1"></span><button type="button" id="relayCancel">Close</button><button type="submit" class="primary">Save &amp; connect</button></div>
+  </form>
+</div>
 
 <script>
 (() => {
@@ -447,14 +470,68 @@ function kdeMode(sizes) {
   return best;
 }
 
+// ---- official index via the user's private relay (Kalshi's CF Benchmarks value feed)
+const OFF = { url: "", code: "", ws: null, state: "off", err: "", val: null, a60: null, recv: 0, q15: new Map(), retry: 0 };
+function officialLive() { return OFF.state === "live" && Date.now() - OFF.recv < 5000 && OFF.val != null; }
+function relayConnect() {
+  if (OFF.ws) { OFF.ws.onclose = null; try { OFF.ws.close(); } catch {} OFF.ws = null; }
+  clearTimeout(OFF.retry);
+  if (!OFF.url || !OFF.code) { OFF.state = "off"; relayStatusUI(); return; }
+  const c = COINS[base()]; if (!c) return;
+  let u; try { u = new URL(OFF.url.trim()); } catch { OFF.state = "error"; OFF.err = "That relay address isn't a valid URL"; relayStatusUI(); return; }
+  u.protocol = u.protocol === "http:" ? "ws:" : "wss:"; u.pathname = u.pathname.replace(/\/+$/, "") + "/ws";
+  const gen = S.gen, ws = new WebSocket(u.toString());
+  OFF.ws = ws; OFF.state = "connecting"; OFF.err = ""; relayStatusUI();
+  ws.onopen = () => ws.send(JSON.stringify({ auth: OFF.code, ids: [c.id] }));
+  ws.onmessage = e => {
+    if (gen !== S.gen) return;
+    let m; try { m = JSON.parse(e.data); } catch { return; }
+    if (m.t === "error") { OFF.state = "error"; OFF.err = m.error; relayStatusUI(); }
+    else if (m.t === "status") { OFF.err = m.error || ""; if (m.upstream !== "connected") { OFF.state = "waiting"; } relayStatusUI(); }
+    else if (m.t === "hist" && m.id === c.id) { mergeOfficial(m.pts); }
+    else if (m.t === "v" && m.id === c.id) {
+      OFF.val = m.v; OFF.a60 = m.a60; OFF.recv = Date.now();
+      if (OFF.state !== "live") { OFF.state = "live"; OFF.err = ""; relayStatusUI(); }
+      if (m.q15 && m.q15.end) OFF.q15.set(Math.round(m.q15.end / 1000), m.q15.v);
+    }
+  };
+  ws.onclose = ev => {
+    if (gen !== S.gen || OFF.ws !== ws) return;
+    if (ev.code === 4003) { OFF.state = "error"; OFF.err = "Wrong access code"; relayStatusUI(); return; }
+    OFF.state = "reconnecting"; relayStatusUI();
+    OFF.retry = setTimeout(relayConnect, 4000);
+  };
+}
+function mergeOfficial(pts) {                 // official per-second history replaces estimates for the same seconds
+  if (!pts || !pts.length) return;
+  const m = new Map(IX.sec.map(x => [x.t, x]));
+  for (const [t, v] of pts) m.set(t, { t, v, off: true });
+  IX.sec = [...m.values()].sort((a, b) => a.t - b.t).slice(-6 * 3600);
+  rebuildIx();
+}
+function relayStatusUI() {
+  const el = $("relayStatus"); if (!el) return;
+  const txt = { off: "Not connected.", connecting: "Connecting to your relay…", waiting: "Relay reached; waiting for Kalshi…", live: "Connected: showing the official index.", reconnecting: "Connection lost; retrying…", error: "Problem" }[OFF.state] || OFF.state;
+  el.textContent = txt + (OFF.err ? " " + OFF.err : "");
+  el.className = "hint " + (OFF.state === "live" ? "ok" : OFF.state === "error" || OFF.err ? "bad" : "");
+}
+function loadRelay() { try { const r = JSON.parse(localStorage.getItem("walls.relay") || "{}"); OFF.url = r.url || ""; OFF.code = r.code || ""; } catch {} }
+function saveRelay() { try { localStorage.setItem("walls.relay", JSON.stringify({ url: OFF.url, code: OFF.code })); } catch {} }
+
 // ---- index samples, candles and Kalshi settlement windows
 const IX = { val: null, used: [], sec: [] };   // sec: [{t, v}] one "top of second" value per second
 function indexTick() {
-  const r = computeRTI(); if (!r) { IX.val = null; return; }
-  IX.val = r.v; IX.used = r.used;
+  const r = computeRTI();
+  IX.est = r ? r.v : null; IX.used = r ? r.used : [];
+  const off = officialLive();
+  IX.official = off;
+  const v = off ? OFF.val : IX.est;
+  if (v == null) { IX.val = null; return; }
+  IX.val = v;
   const sec = Math.floor(Date.now() / 1000), last = IX.sec.at(-1);
-  if (!last || last.t !== sec) { IX.sec.push({ t: sec, v: r.v }); if (IX.sec.length > 6 * 3600) IX.sec.shift(); onIndex(sec, r.v); }
-  if (S.src === "kalshi") S.last = r.v;
+  if (!last || last.t !== sec) { IX.sec.push({ t: sec, v, off }); if (IX.sec.length > 6 * 3600) IX.sec.shift(); onIndex(sec, v); }
+  else if (off && !last.off) { last.v = v; last.off = true; }
+  if (S.src === "kalshi") S.last = v;
 }
 function onIndex(sec, v) {
   const t = bucketT(sec), arr = S.ix;
@@ -490,8 +567,11 @@ function avgSec(from, to) {                   // mean of per-second values with 
 function kalshiWindows() {
   const now = Date.now() / 1000;
   const open15 = Math.floor(now / 900) * 900, close15 = open15 + 900, closeH = Math.floor(now / 3600) * 3600 + 3600;
-  const target = avgSec(open15 - 60, open15);           // 15-min markets: avg of the 60 s before the window opened
-  const live60 = avgSec(Math.floor(now) - 60, Math.floor(now) + 1);
+  // 15-min markets compare the avg of the final 60 s against the avg of the 60 s before the window opened.
+  // Prefer Kalshi's own published final-minute average when the relay delivered it.
+  const offTarget = OFF.q15.get(open15);
+  const target = offTarget != null ? { v: offTarget, n: 60 } : avgSec(open15 - 60, open15);
+  const live60 = officialLive() && OFF.a60 != null ? { v: OFF.a60, n: 60 } : avgSec(Math.floor(now) - 60, Math.floor(now) + 1);
   return { open15, close15, closeH, now, target: target && target.n >= 50 ? target.v : null, live60: live60 ? live60.v : null, n60: live60 ? live60.n : 0 };
 }
 
@@ -793,6 +873,8 @@ function updateHeader() {
   const pe = $("price"); pe.textContent = fmtP(S.last); pe.className = "price " + (c && c.c >= c.o ? "up" : "down");
   const kw = S.kw = kalshiWindows();
   const mmss = sec => { sec = Math.max(0, Math.floor(sec)); return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`; };
+  const bd = $("badge"); bd.textContent = IX.official ? "OFFICIAL" : "ESTIMATE"; bd.className = "kal badge" + (IX.official ? " official" : "");
+  bd.title = IX.official ? "Official CF Benchmarks index from Kalshi, via your relay" : "Rebuilt from 7 exchanges' order books (connect the Kalshi official feed in settings)";
   if (S.src === "kalshi") {
     $("kTarget").textContent = kw.target ? fmtP(kw.target) : "waiting…";
     $("kTarget").title = kw.target ? "Average of the index over the 60 seconds before this 15-minute window opened" : "Needs the app open during the minute before the window starts";
@@ -806,6 +888,7 @@ function updateHeader() {
     $("kCdLbl").textContent = "15-min · hourly close in";
   } else {
     const iv = IX.val;
+    $("ixVal").previousElementSibling.textContent = IX.official ? "Kalshi index (official)" : "Kalshi index (est.)";
     $("ixVal").innerHTML = iv ? `${fmtP(iv)} <span class="hint">(${iv - S.last >= 0 ? "+" : ""}${fmtP(iv - S.last)})</span>` : "—";
   }
   const bb = bestBid(), ba = bestAsk();
@@ -818,7 +901,8 @@ function updateHeader() {
   const row = w => { const dist = (w.p / S.last - 1) * 100;
     return `<span class="w ${w.side}"><strong>${w.side === "sell" ? "Sell wall" : "Buy wall"}</strong> ~${fmtP(Math.round(w.p / bStep) * bStep, bStep)} · ${fmtQ(w.q)} ${base()} <span class="hint">(${dist >= 0 ? "+" : ""}${dist.toFixed(2)}%)</span></span>`; };
   const asks = C.walls.filter(w => w.side === "sell").sort((a, b) => a.p - b.p), bids = C.walls.filter(w => w.side === "buy").sort((a, b) => b.p - a.p);
-  const src = S.src === "kalshi" ? `<span class="w hint">Index est. from ${IX.used.length}/${EX.length} exchanges${IX.used.length < EX.length ? " (" + EX.filter(e => !IX.used.includes(e.name)).map(e => e.name).join(", ") + " offline)" : ""} · not the official feed</span>` : "";
+  const src = S.src === "kalshi" && IX.official ? `<span class="w hint" style="color:#4fe0ad">Official CF Benchmarks index from Kalshi · walls from ${IX.used.length}/${EX.length} exchanges</span>`
+    : S.src === "kalshi" ? `<span class="w hint">${OFF.url && OFF.state !== "live" ? "Official feed " + (OFF.state === "error" ? "error: " + OFF.err : OFF.state) + " · " : ""}Index est. from ${IX.used.length}/${EX.length} exchanges${IX.used.length < EX.length ? " (" + EX.filter(e => !IX.used.includes(e.name)).map(e => e.name).join(", ") + " offline)" : ""} · not the official feed</span>` : "";
   $("walls").innerHTML = (asks.length || bids.length ? asks.map(row).join("") + bids.map(row).join("")
     : `<span class="hint">No walls above ${S.sens}× the typical row size in this range. Lower "Wall size" or widen the range.</span>`) + src;
 }
@@ -831,7 +915,8 @@ function restart() {
   hmReset();
   $("title").textContent = S.src === "kalshi" ? `${base()} · Kalshi index` : S.product; document.title = `${S.product} · Live Candles + Walls`;
   $("walls").innerHTML = `<span class="hint">Connecting to Coinbase…</span>`;
-  connect(); connectExchanges(); loadCandles();
+  OFF.q15.clear(); OFF.val = null;
+  connect(); connectExchanges(); relayConnect(); loadCandles();
 }
 function setSrc(src) {
   S.src = src;
@@ -843,6 +928,11 @@ function setSrc(src) {
   hmReset(); save();
 }
 for (const b of document.querySelectorAll("#srcSeg button")) b.onclick = () => setSrc(b.dataset.src);
+$("relayBtn").onclick = () => { $("relayUrl").value = OFF.url; $("relayCode").value = OFF.code; relayStatusUI(); $("relayDlg").hidden = false; document.body.classList.remove("settings"); };
+$("relayCancel").onclick = () => { $("relayDlg").hidden = true; };
+$("relayDlg").addEventListener("pointerdown", e => { if (e.target.id === "relayDlg") $("relayDlg").hidden = true; });
+$("relayForm").onsubmit = e => { e.preventDefault(); OFF.url = $("relayUrl").value.trim(); OFF.code = $("relayCode").value; saveRelay(); relayConnect(); };
+$("relayOff").onclick = () => { OFF.url = ""; OFF.code = ""; saveRelay(); relayConnect(); $("relayUrl").value = ""; $("relayCode").value = ""; };
 $("product").onchange = e => { S.product = e.target.value; restart(); };
 $("tf").onchange = e => { S.tf = +e.target.value; S.cb = []; S.ix = []; S.candles = S.src === "kalshi" ? S.ix : S.cb; S.v.off = S.v.offT = 0; hmReset(); rebuildIx(); loadCandles(); };
 $("range").onchange = e => { if (e.target.value) S.v.rangeT = +e.target.value; };
@@ -929,7 +1019,7 @@ function loadPrefs() {
 for (const id of ["product", "tf", "range", "sens", "heat"]) $(id).addEventListener("change", () => setTimeout(save, 0));
 
 // ======================= loops =======================
-loadPrefs(); resize(); if (S.small) S.v.cw = S.v.cwT = 6; restart();
+loadPrefs(); loadRelay(); resize(); if (S.small) S.v.cw = S.v.cwT = 6; restart();
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) navigator.serviceWorker.register("sw.js").catch(() => {});
 setInterval(indexTick, 500);
 window.__walls = { S, IX, EX };   // handy for debugging in the browser console
