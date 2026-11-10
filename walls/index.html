@@ -22,6 +22,14 @@
   body { display: flex; flex-direction: column; height: 100vh; height: 100dvh; overscroll-behavior: none;
     -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none;
     padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
+  .seg { display: inline-flex; border: 1px solid #2a3240; border-radius: 8px; overflow: hidden; flex: none; }
+  .seg button { border: 0; border-radius: 0; background: #151a22; color: var(--muted); padding: 6px 10px; font-weight: 600; }
+  .seg button.on { background: #24304a; color: #fff; }
+  .seg button[data-src="kalshi"].on { background: #3a2f12; color: #f5c451; }
+  body:not(.kalshi) .kal { display: none; }
+  body.kalshi .cbo { display: none; }
+  #kTarget { color: #f5c451; }
+  .up { color: var(--up); } .down { color: var(--down); }
   #gear { display: none; font-size: 17px; line-height: 1; padding: 6px 9px; }
   canvas.resize { cursor: ew-resize; }
   header { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 10px 14px;
@@ -98,8 +106,15 @@
     <div style="display:flex;align-items:center;gap:8px"><span id="dot" class="dot"></span><strong id="title">BTC-USD</strong></div>
     <div id="price" class="price">—</div>
   </div>
+  <div class="seg" id="srcSeg" title="Price source">
+    <button data-src="coinbase" class="on">Coinbase</button><button data-src="kalshi">Kalshi</button>
+  </div>
   <button id="gear" aria-label="Settings">⚙︎</button>
-  <div class="stat"><small>Spread</small><span id="spread">—</span></div>
+  <div class="stat kal"><small>15-min target</small><span id="kTarget">—</span></div>
+  <div class="stat kal"><small>Last 60s avg</small><span id="kAvg">—</span></div>
+  <div class="stat kal"><small id="kCdLbl">15-min closes in</small><span id="kCd">—</span></div>
+  <div class="stat cbo"><small>Kalshi index</small><span id="ixVal">—</span></div>
+  <div class="stat cbo"><small>Spread</small><span id="spread">—</span></div>
   <div class="stat"><small>Buyers in view</small><span id="bidTot" style="color:var(--up)">—</span></div>
   <div class="stat"><small>Sellers in view</small><span id="askTot" style="color:var(--down)">—</span></div>
   <div class="stat"><small id="press">Pressure</small><div class="meter"><div id="meter" style="width:50%"></div></div></div>
@@ -140,7 +155,7 @@
 const S = {
   product: "BTC-USD", tf: 60, sens: 4, heat: true,
   bids: new Map(), asks: new Map(), bookReady: false, bookDirty: true,
-  candles: [], last: null,
+  candles: [], last: null, cb: [], ix: [], cbLast: null, src: "coinbase",
   ws: null, gen: 0, small: false, showBook: true, depthW: 0,
   // view (T = target, plain = displayed; displayed eases toward target every frame)
   v: { center: null, range: 0.01, rangeT: 0.01, cw: 9, cwT: 9, off: 0, offT: 0, last: null },
@@ -177,22 +192,24 @@ async function loadCandles() {
     const rows = await r.json();
     if (gen !== S.gen || tf !== S.tf) return;
     const m = new Map(rows.map(([t, l, h, o, c, v]) => [t, { t, o, h, l, c, v }]));
-    for (const c of S.candles) m.set(c.t, c);          // live-built candles win
-    S.candles = [...m.values()].sort((a, b) => a.t - b.t).slice(-600);
-    if (!S.last && S.candles.length) S.last = S.candles.at(-1).c;
+    for (const c of S.cb) m.set(c.t, c);               // live-built candles win
+    S.cb = [...m.values()].sort((a, b) => a.t - b.t).slice(-600);
+    if (!S.cbLast && S.cb.length) S.cbLast = S.cb.at(-1).c;
+    if (S.src === "coinbase") { S.candles = S.cb; if (!S.last) S.last = S.cbLast; } else rebuildIx();
   } catch (e) { console.warn("candle history unavailable; building from live trades", e); }
 }
 function onTrade(price, size, iso) {
   const t = bucketT(Date.parse(iso) / 1000);
-  let c = S.candles.at(-1);
+  let c = S.cb.at(-1);
   if (!c || t > c.t) {
     const o = c ? c.c : price;
     c = { t, o, h: Math.max(o, price), l: Math.min(o, price), c: price, v: 0 };
-    S.candles.push(c); if (S.candles.length > 600) S.candles.shift();
-    if (S.v.offT > 0) S.v.offT += 1, S.v.off += 1;      // keep a panned view steady
+    S.cb.push(c); if (S.cb.length > 600) S.cb.shift();
+    if (S.src === "coinbase" && S.v.offT > 0) S.v.offT += 1, S.v.off += 1;      // keep a panned view steady
   } else if (t < c.t) return;
   c.h = Math.max(c.h, price); c.l = Math.min(c.l, price); c.c = price; c.v += size;
-  S.last = price;
+  S.cbLast = price;
+  if (S.src === "coinbase") S.last = price;
 }
 
 // ======================= live feed =======================
@@ -220,7 +237,7 @@ function connect() {
     } else if (d.channel === "market_trades") {
       for (const ev of d.events || []) {
         const tr = (ev.trades || []).slice().sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
-        if (ev.type === "snapshot") { const t = tr.at(-1); if (t && !S.last) S.last = +t.price; continue; }
+        if (ev.type === "snapshot") { const t = tr.at(-1); if (t && !S.cbLast) { S.cbLast = +t.price; if (S.src === "coinbase" && !S.last) S.last = S.cbLast; } continue; }
         for (const t of tr) onTrade(+t.price, +t.size, t.time);
       }
     }
@@ -229,8 +246,254 @@ function connect() {
   ws.onerror = () => setDot("bad");
 }
 function setDot(c) { $("dot").className = "dot " + c; }
-function bestBid() { let b = -Infinity; for (const p of S.bids.keys()) if (p > b) b = p; return b; }
-function bestAsk() { let a = Infinity; for (const p of S.asks.keys()) if (p < a) a = p; return a; }
+function viewBooks() {
+  if (S.src !== "kalshi") return [{ bids: S.bids, asks: S.asks }];
+  const now = Date.now();
+  return EX.filter(e => e.ready && !e.flag && (e === CB || now - e.t < 10000));
+}
+function bestBid() { let b = -Infinity; for (const k of viewBooks()) for (const p of k.bids.keys()) if (p > b) b = p; return b; }
+function bestAsk() { let a = Infinity; for (const k of viewBooks()) for (const p of k.asks.keys()) if (p < a) a = p; return a; }
+
+// ======================= Kalshi index (CF Benchmarks RTI estimate) =======================
+// Kalshi crypto markets settle on CF Benchmarks Real Time Indices (BRTI for bitcoin).
+// The official feed needs a licensed/authenticated connection, so this rebuilds the index
+// from the same seven constituent exchanges' public order books using the published
+// CME CF Real Time Indices methodology: consolidate books, cap outsized levels
+// (trimmed mean + 5 winsorized std devs), uncross, walk the mid price-volume curve out to
+// the 0.5% spread "utilized depth" and take its exponentially weighted average.
+const COINS = {
+  BTC:  { kraken: "BTC/USD",  bitstamp: "btcusd",  gemini: "BTCUSD",  cryptocom: "BTC_USD",  bullish: "BTCUSD",  lmax: "btc-usd",  id: "BRTI" },
+  ETH:  { kraken: "ETH/USD",  bitstamp: "ethusd",  gemini: "ETHUSD",  cryptocom: "ETH_USD",  bullish: "ETHUSD",  lmax: "eth-usd",  id: "ETHUSD_RTI" },
+  SOL:  { kraken: "SOL/USD",  bitstamp: "solusd",  gemini: "SOLUSD",  cryptocom: "SOL_USD",  bullish: "SOLUSD",  lmax: "sol-usd",  id: "SOLUSD_RTI" },
+  XRP:  { kraken: "XRP/USD",  bitstamp: "xrpusd",  gemini: "XRPUSD",  cryptocom: "XRP_USD",  bullish: "XRPUSD",  lmax: "xrp-usd",  id: "XRPUSD_RTI" },
+  DOGE: { kraken: "DOGE/USD", bitstamp: "dogeusd", gemini: "DOGEUSD", cryptocom: "DOGE_USD", bullish: "DOGEUSD", lmax: "doge-usd", id: "DOGEUSD_RTI" },
+};
+const CB = { name: "Coinbase", key: "coinbase", bids: S.bids, asks: S.asks, t: 0, ready: false, flag: false };
+const EX = [CB];
+function mkEx(key, name) { const e = { key, name, bids: new Map(), asks: new Map(), t: 0, ready: false, flag: false, ws: null, timer: 0 }; EX.push(e); return e; }
+const KR = mkEx("kraken", "Kraken"), BS = mkEx("bitstamp", "Bitstamp"), GE = mkEx("gemini", "Gemini"),
+      CR = mkEx("cryptocom", "Crypto.com"), BU = mkEx("bullish", "Bullish"), LM = mkEx("lmax", "LMAX Digital");
+function setBook(e, bids, asks) {           // replace a book from [[price, size], ...]
+  e.bids.clear(); e.asks.clear();
+  for (const [p, q] of bids) if (+q > 0) e.bids.set(+p, +q);
+  for (const [p, q] of asks) if (+q > 0) e.asks.set(+p, +q);
+  e.t = Date.now(); e.ready = e.bids.size > 0 && e.asks.size > 0;
+}
+function openFeed(e, url, onopen, onmsg) {
+  const gen = S.gen;
+  if (e.ws) { e.ws.onclose = null; try { e.ws.close(); } catch {} }
+  clearInterval(e.timer);
+  e.bids.clear(); e.asks.clear(); e.ready = false; e.t = 0; e.flag = false;
+  let ws; try { ws = new WebSocket(url); } catch { return; }
+  e.ws = ws;
+  ws.onopen = () => onopen(ws);
+  ws.onmessage = m => { if (gen !== S.gen) return; let d; try { d = JSON.parse(m.data); } catch { return; } try { onmsg(d, ws); } catch (err) { console.warn(e.name, err); } };
+  ws.onclose = () => { if (gen !== S.gen) return; e.ready = false; setTimeout(() => { if (gen === S.gen) connectExchanges(e.key); }, 3000); };
+  ws.onerror = () => {};
+}
+function connectExchanges(only) {
+  const c = COINS[base()]; if (!c) return;
+  const want = k => !only || only === k;
+  if (want("kraken")) openFeed(KR, "wss://ws.kraken.com/v2",
+    ws => ws.send(JSON.stringify({ method: "subscribe", params: { channel: "book", symbol: [c.kraken], depth: 1000 } })),
+    d => {
+      if (d.channel !== "book") return;
+      for (const b of d.data || []) {
+        if (d.type === "snapshot") { KR.bids.clear(); KR.asks.clear(); }
+        for (const l of b.bids || []) if (l.qty > 0) KR.bids.set(+l.price, +l.qty); else KR.bids.delete(+l.price);
+        for (const l of b.asks || []) if (l.qty > 0) KR.asks.set(+l.price, +l.qty); else KR.asks.delete(+l.price);
+      }
+      trimBook(KR.bids, 1000, true); trimBook(KR.asks, 1000, false);
+      KR.t = Date.now(); KR.ready = KR.bids.size > 0 && KR.asks.size > 0;
+    });
+  if (want("bitstamp")) openFeed(BS, "wss://ws.bitstamp.net",
+    ws => ws.send(JSON.stringify({ event: "bts:subscribe", data: { channel: "order_book_" + c.bitstamp } })),
+    (d, ws) => {
+      if (d.event === "bts:request_reconnect") { ws.close(); return; }
+      if (d.event === "data" && d.data && d.data.bids) setBook(BS, d.data.bids, d.data.asks);
+    });
+  if (want("gemini")) openFeed(GE, "wss://api.gemini.com/v2/marketdata",
+    ws => ws.send(JSON.stringify({ type: "subscribe", subscriptions: [{ name: "l2", symbols: [c.gemini] }] })),
+    d => {
+      if (d.type !== "l2_updates") return;
+      for (const [side, p, q] of d.changes || []) { const m = side === "buy" ? GE.bids : GE.asks; if (+q > 0) m.set(+p, +q); else m.delete(+p); }
+      GE.t = Date.now(); GE.ready = GE.bids.size > 0 && GE.asks.size > 0;
+    });
+  if (want("cryptocom")) openFeed(CR, "wss://stream.crypto.com/exchange/v1/market",
+    ws => ws.send(JSON.stringify({ id: 1, method: "subscribe", params: { channels: [`book.${c.cryptocom}.50`] } })),
+    (d, ws) => {
+      if (d.method === "public/heartbeat") { ws.send(JSON.stringify({ id: d.id, method: "public/respond-heartbeat" })); return; }
+      const r = d.result; if (!r || !r.data || !r.data[0]) return;
+      const x = r.data[0];
+      if (r.channel === "book.update" && x.update) {
+        for (const [p, q] of x.update.bids || []) if (+q > 0) CR.bids.set(+p, +q); else CR.bids.delete(+p);
+        for (const [p, q] of x.update.asks || []) if (+q > 0) CR.asks.set(+p, +q); else CR.asks.delete(+p);
+        CR.t = Date.now(); CR.ready = CR.bids.size > 0 && CR.asks.size > 0;
+      } else if (x.bids) setBook(CR, x.bids, x.asks);
+    });
+  if (want("bullish")) openFeed(BU, "wss://api.exchange.bullish.com/trading-api/v1/market-data/orderbook",
+    ws => {
+      ws.send(JSON.stringify({ jsonrpc: "2.0", type: "command", method: "subscribe", params: { topic: "l2Orderbook", symbol: c.bullish }, id: "1" }));
+      BU.timer = setInterval(() => { try { ws.send(JSON.stringify({ jsonrpc: "2.0", type: "command", method: "keepalivePing", params: {}, id: "ka" })); } catch {} }, 30000);
+    },
+    d => {
+      if (d.dataType !== "V1TALevel2" || !d.data) return;
+      const pairs = a => { const o = []; for (let i = 0; i + 1 < a.length; i += 2) o.push([a[i], a[i + 1]]); return o; };
+      setBook(BU, pairs(d.data.bids || []), pairs(d.data.asks || []));
+    });
+  if (want("lmax")) openFeed(LM, "wss://public-data-api.london-digital.lmax.com/v1/web-socket",
+    ws => ws.send(JSON.stringify({ type: "SUBSCRIBE", channels: [{ name: "ORDER_BOOK", instruments: [c.lmax] }] })),
+    d => {
+      if (d.type !== "ORDER_BOOK") return;
+      setBook(LM, (d.bids || []).map(l => [l.price, l.quantity]), (d.asks || []).map(l => [l.price, l.quantity]));
+    });
+}
+function trimBook(m, depth, isBid) {
+  if (m.size <= depth) return;
+  const ks = [...m.keys()].sort((a, b) => isBid ? b - a : a - b);
+  for (let i = depth; i < ks.length; i++) m.delete(ks[i]);
+}
+
+function computeRTI() {
+  const now = Date.now();
+  CB.t = S.bookReady ? now : 0; CB.ready = S.bookReady;       // Coinbase book is kept live by its own feed
+  const live = EX.filter(e => e.ready && now - e.t < 10000);    // retrieval lag threshold: 10 s
+  for (const e of live) {
+    let bb = -Infinity, ba = Infinity;
+    for (const p of e.bids.keys()) if (p > bb) bb = p;
+    for (const p of e.asks.keys()) if (p < ba) ba = p;
+    e.mid = isFinite(bb) && isFinite(ba) && bb < ba ? (bb + ba) / 2 : NaN;
+  }
+  const valid = live.filter(e => isFinite(e.mid));
+  if (!valid.length) return null;
+  const ms = valid.map(e => e.mid).sort((a, b) => a - b), h = ms.length >> 1;
+  const med = ms.length % 2 ? ms[h] : (ms[h - 1] + ms[h]) / 2;
+  for (const e of valid) {                                       // potentially erroneous data: 5% out, back in under 2.5%
+    const dev = Math.abs(e.mid / med - 1);
+    if (e.flag) { if (dev < 0.025) e.flag = false; } else if (dev > 0.05) e.flag = true;
+  }
+  const use = valid.filter(e => !e.flag);
+  if (!use.length) return null;
+  // consolidate by price
+  const lo = med * 0.95, hi = med * 1.05, A = new Map(), B = new Map();
+  for (const e of use) {
+    for (const [p, q] of e.asks) if (p >= lo && p <= hi) A.set(p, (A.get(p) || 0) + q);
+    for (const [p, q] of e.bids) if (p >= lo && p <= hi) B.set(p, (B.get(p) || 0) + q);
+  }
+  let asks = [...A].sort((a, b) => a[0] - b[0]), bids = [...B].sort((a, b) => b[0] - a[0]);
+  if (!asks.length || !bids.length) return null;
+  // dynamic order size cap
+  let ac = 0; while (ac < asks.length && asks[ac][0] <= 1.05 * asks[0][0]) ac++; ac = Math.max(ac, Math.min(asks.length, 50));
+  let bc = 0; while (bc < bids.length && bids[bc][0] >= 0.95 * bids[0][0]) bc++; bc = Math.max(bc, Math.min(bids.length, 50));
+  const smp = []; for (let i = 0; i < ac; i++) smp.push(asks[i][1]); for (let i = 0; i < bc; i++) smp.push(bids[i][1]);
+  const cap = (() => { const w = winsor(smp); return w.trimMean + 5 * w.sd; })();
+  for (const l of asks) if (l[1] > cap) l[1] = cap;
+  for (const l of bids) if (l[1] > cap) l[1] = cap;
+  // uncross
+  let ia = 0, ib = 0;
+  while (ia < asks.length && ib < bids.length && bids[ib][0] >= asks[ia][0]) {
+    const m = Math.min(asks[ia][1], bids[ib][1]); asks[ia][1] -= m; bids[ib][1] -= m;
+    if (asks[ia][1] <= 1e-12) ia++; if (bids[ib][1] <= 1e-12) ib++;
+  }
+  asks = asks.slice(ia); bids = bids.slice(ib);
+  if (!asks.length || !bids.length) return null;
+  // dynamic spacing: min(level-based, KDE mode of the thinner side's order sizes)
+  let sumA = 0, sumB = 0; for (const l of asks) sumA += l[1]; for (const l of bids) sumB += l[1];
+  const sLev = Math.min(sumA, sumB) / 100;
+  const thin = (sumA < sumB ? asks : bids).map(l => l[1]);
+  let s = Math.min(sLev, kdeMode(thin));
+  if (!(s > 0)) s = sLev;
+  const MAXSTEPS = 20000; s = Math.max(s, Math.min(sumA, sumB) / MAXSTEPS);
+  // walk mid price-volume curve out to the 0.5% utilized depth
+  const mids = [];
+  let ja = 0, jb = 0, ca = asks[0][1], cb = bids[0][1];
+  for (let k = 1; k <= MAXSTEPS; k++) {
+    const v = k * s;
+    while (ca < v && ja + 1 < asks.length) ca += asks[++ja][1];
+    while (cb < v && jb + 1 < bids.length) cb += bids[++jb][1];
+    if (ca < v || cb < v) break;
+    const ap = asks[ja][0], bp = bids[jb][0], mid = (ap + bp) / 2;
+    if (ap / mid - 1 > 0.005) break;
+    mids.push(mid);
+  }
+  if (!mids.length) mids.push((asks[0][0] + bids[0][0]) / 2);
+  const vT = mids.length * s, lam = 1 / (0.3 * vT);
+  let num = 0, den = 0;
+  for (let k = 0; k < mids.length; k++) { const w = Math.exp(-lam * (k + 1) * s); num += mids[k] * w; den += w; }
+  return { v: Math.round(num / den * 100) / 100, used: use.map(e => e.name), total: EX.length };
+}
+function winsor(arr) {
+  const s = Float64Array.from(arr).sort(), n = s.length, k = Math.floor(0.01 * n);
+  let tm = 0; for (let i = k; i < n - k; i++) tm += s[i]; tm /= Math.max(1, n - 2 * k);
+  const w = s.map((x, i) => i < k ? s[k] : i >= n - k ? s[n - k - 1] : x);   // still sorted
+  const wm = w.reduce((a, b) => a + b, 0) / n;
+  let ss = 0; for (const x of w) ss += (x - wm) ** 2;
+  return { trimMean: tm, sd: n > 1 ? Math.sqrt(ss / (n - 1)) : 0, w };
+}
+function kdeMode(sizes) {
+  if (!sizes.length) return Infinity;
+  const { w, sd } = winsor(sizes);
+  const sorted = w;
+  if (w.length < 4 || !(sd > 0)) return sorted[0];
+  const n = w.length, bw = 1.06 * sd * Math.pow(n, -0.2);
+  const lo = sorted[0], hi = sorted[n - 1], G = 256, bins = new Float64Array(G);
+  for (const x of w) bins[Math.min(G - 1, Math.floor((x - lo) / (hi - lo) * (G - 1)))]++;
+  let best = lo, bestD = -1;
+  for (let g = 0; g < G; g++) {
+    const x = lo + (hi - lo) * g / (G - 1); let d = 0;
+    for (let b = 0; b < G; b++) if (bins[b]) { const u = (x - (lo + (hi - lo) * b / (G - 1))) / bw; d += bins[b] * Math.exp(-0.5 * u * u); }
+    if (d > bestD) { bestD = d; best = x; }
+  }
+  return best;
+}
+
+// ---- index samples, candles and Kalshi settlement windows
+const IX = { val: null, used: [], sec: [] };   // sec: [{t, v}] one "top of second" value per second
+function indexTick() {
+  const r = computeRTI(); if (!r) { IX.val = null; return; }
+  IX.val = r.v; IX.used = r.used;
+  const sec = Math.floor(Date.now() / 1000), last = IX.sec.at(-1);
+  if (!last || last.t !== sec) { IX.sec.push({ t: sec, v: r.v }); if (IX.sec.length > 6 * 3600) IX.sec.shift(); onIndex(sec, r.v); }
+  if (S.src === "kalshi") S.last = r.v;
+}
+function onIndex(sec, v) {
+  const t = bucketT(sec), arr = S.ix;
+  let c = arr.at(-1);
+  if (!c || t > c.t) {
+    c = { t, o: c && !c.hist ? c.c : v, h: v, l: v, c: v, v: 0 };
+    arr.push(c); if (arr.length > 600) arr.shift();
+    if (S.src === "kalshi" && S.v.offT > 0) S.v.offT += 1, S.v.off += 1;
+  } else if (t < c.t) return;
+  if (c.hist) { Object.assign(c, { o: v, h: v, l: v, c: v, hist: false }); }
+  c.h = Math.max(c.h, v); c.l = Math.min(c.l, v); c.c = v;
+  const cbc = S.cb.at(-1); if (cbc && cbc.t === t) c.v = cbc.v;
+}
+function rebuildIx() {
+  const m = new Map();
+  for (const s of IX.sec) {
+    const t = bucketT(s.t); let c = m.get(t);
+    if (!c) m.set(t, c = { t, o: s.v, h: s.v, l: s.v, c: s.v, v: 0 });
+    c.h = Math.max(c.h, s.v); c.l = Math.min(c.l, s.v); c.c = s.v;
+  }
+  const first = m.size ? Math.min(...m.keys()) : Infinity;
+  const cbv = new Map(S.cb.map(c => [c.t, c.v]));
+  const hist = S.cb.filter(c => c.t < first).map(c => ({ ...c, hist: true }));
+  for (const c of m.values()) c.v = cbv.get(c.t) || 0;
+  S.ix = [...hist, ...[...m.values()].sort((a, b) => a.t - b.t)].slice(-600);
+  if (S.src === "kalshi") S.candles = S.ix;
+}
+function avgSec(from, to) {                   // mean of per-second values with from <= t < to
+  let s = 0, n = 0;
+  for (let i = IX.sec.length - 1; i >= 0; i--) { const x = IX.sec[i]; if (x.t < from) break; if (x.t < to) { s += x.v; n++; } }
+  return n ? { v: s / n, n } : null;
+}
+function kalshiWindows() {
+  const now = Date.now() / 1000;
+  const open15 = Math.floor(now / 900) * 900, close15 = open15 + 900, closeH = Math.floor(now / 3600) * 3600 + 3600;
+  const target = avgSec(open15 - 60, open15);           // 15-min markets: avg of the 60 s before the window opened
+  const live60 = avgSec(Math.floor(now) - 60, Math.floor(now) + 1);
+  return { open15, close15, closeH, now, target: target && target.n >= 50 ? target.v : null, live60: live60 ? live60.v : null, n60: live60 ? live60.n : 0 };
+}
 
 // ======================= heatmap engine =======================
 // Resting orders are sampled 4x/sec into a ring of columns (one per candle) on an
@@ -247,13 +510,15 @@ function hmReset() {
 }
 function hmCol(t) { return ((Math.floor(t / S.tf) % HM.cols) + HM.cols) % HM.cols; }
 function hmSample() {
-  if (!S.bookReady || !S.last) return;
+  if (!S.last || !viewBooks().length) return;
   if (!HM.step) { HM.step = niceStep(S.last * 0.00008); HM.bBase = Math.floor(S.last / HM.step) - HM.rows / 2; }
   const t = bucketT(Date.now() / 1000), col = hmCol(t), R = HM.rows, off = col * R;
   if (HM.colT[col] !== t) { HM.colT[col] = t; HM.cnt[col] = 0; HM.sumB.fill(0, off, off + R); HM.sumA.fill(0, off, off + R); }
   const lo = (HM.bBase) * HM.step, hi = (HM.bBase + R) * HM.step, st = HM.step, bb = HM.bBase;
-  for (const [p, q] of S.bids) if (p >= lo && p < hi) HM.sumB[off + (Math.floor(p / st) - bb)] += q;
-  for (const [p, q] of S.asks) if (p >= lo && p < hi) HM.sumA[off + (Math.floor(p / st) - bb)] += q;
+  for (const k of viewBooks()) {
+    for (const [p, q] of k.bids) if (p >= lo && p < hi) HM.sumB[off + (Math.floor(p / st) - bb)] += q;
+    for (const [p, q] of k.asks) if (p >= lo && p < hi) HM.sumA[off + (Math.floor(p / st) - bb)] += q;
+  }
   const n = ++HM.cnt[col];
   // reference level = 97th percentile of current row sizes (eased so colours stay stable)
   const vals = [];
@@ -280,8 +545,10 @@ function recalc() {
   const lo = Math.floor(center * (1 - range * 1.6) / bStep) * bStep, hi = center * (1 + range * 1.6);
   const rows = new Map(); let bt = 0, at = 0;
   const vlo = center * (1 - range), vhi = center * (1 + range);
-  for (const [p, q] of S.bids) if (p >= lo && p <= hi) { const k = Math.floor(p / bStep); const r = rows.get(k); if (r) r[0] += q; else rows.set(k, [q, 0]); if (p >= vlo) bt += q; }
-  for (const [p, q] of S.asks) if (p >= lo && p <= hi) { const k = Math.floor(p / bStep); const r = rows.get(k); if (r) r[1] += q; else rows.set(k, [0, q]); if (p <= vhi) at += q; }
+  for (const bk of viewBooks()) {
+    for (const [p, q] of bk.bids) if (p >= lo && p <= hi) { const k = Math.floor(p / bStep); const r = rows.get(k); if (r) r[0] += q; else rows.set(k, [q, 0]); if (p >= vlo) bt += q; }
+    for (const [p, q] of bk.asks) if (p >= lo && p <= hi) { const k = Math.floor(p / bStep); const r = rows.get(k); if (r) r[1] += q; else rows.set(k, [0, q]); if (p <= vhi) at += q; }
+  }
   // walls: rows far above the typical row size; neighbouring rows merge into one wall
   const vals = []; for (const [k, [b, a]] of rows) { const p = k * bStep; if (p < vlo || p > vhi) continue; if (b) vals.push(b); if (a) vals.push(a); }
   vals.sort((a, b) => a - b);
@@ -398,10 +665,22 @@ function frame(dt) {
     let c = S.candles[i];
     if (i === n - 1) c = { ...c, c: v.last, h: Math.max(c.h, v.last), l: Math.min(c.l, v.last) };
     const x = xOfIdx(i), up = c.c >= c.o, col = up ? "#22c38e" : "#f0506e";
+    ctx.globalAlpha = c.hist ? 0.35 : 1;
     ctx.fillStyle = col;
     ctx.fillRect(x - 0.5, y(c.h), 1, Math.max(1, y(c.l) - y(c.h)));
     const top = y(Math.max(c.o, c.c)), bot = y(Math.min(c.o, c.c));
     ctx.fillRect(x - cw / 2, top, cw, Math.max(1, bot - top));
+  }
+  ctx.globalAlpha = 1;
+  // ---- Kalshi 15-minute target (avg of the 60 s before the window opened)
+  if (S.src === "kalshi" && S.kw && S.kw.target) {
+    const ty = Math.round(y(S.kw.target)) + 0.5;
+    ctx.strokeStyle = "rgba(245,196,81,.9)"; ctx.lineWidth = 1.5; ctx.setLineDash([10, 4, 2, 4]);
+    ctx.beginPath(); ctx.moveTo(0, ty); ctx.lineTo(chartR, ty); ctx.stroke(); ctx.setLineDash([]);
+    ctx.font = "600 11px -apple-system, sans-serif"; ctx.textBaseline = "middle";
+    const txt = `15-MIN TARGET ${fmtP(S.kw.target)}`, tw = ctx.measureText(txt).width;
+    ctx.fillStyle = "rgba(11,14,19,.85)"; ctx.fillRect(chartR - tw - 20, ty - 9, tw + 12, 18);
+    ctx.fillStyle = "#f5c451"; ctx.fillText(txt, chartR - tw - 14, ty);
   }
 
   // ---- wall labels
@@ -481,6 +760,10 @@ function frame(dt) {
   ctx.fillStyle = colr; ctx.fillRect(chartR + 1, ly - 9, AXIS_W - 2, 18);
   ctx.fillStyle = "#06120d"; ctx.font = "600 11px -apple-system, sans-serif"; ctx.textBaseline = "middle";
   ctx.fillText(fmtP(S.last), chartR + 6, ly);
+  if (S.src === "kalshi" && S.kw && S.kw.target) {
+    const ty = y(S.kw.target);
+    if (Math.abs(ty - ly) > 16) { ctx.fillStyle = "#f5c451"; ctx.fillRect(chartR + 1, ty - 9, AXIS_W - 2, 18); ctx.fillStyle = "#1a1405"; ctx.fillText(fmtP(S.kw.target), chartR + 6, ty); }
+  }
 
   // ---- crosshair + tooltip
   const tip = $("tip");
@@ -494,8 +777,8 @@ function frame(dt) {
     ctx.fillStyle = "#fff"; ctx.fillText(fmtP(mp), chartR + 6, my);
     const kk = Math.floor(mp / bStep), r = C.rows.get(kk) || [0, 0], pLo = kk * bStep;
     tip.innerHTML = `${fmtP(pLo, bStep)} – ${fmtP(pLo + bStep, bStep)}<br>` +
-      (r[1] > 0 ? `<span style="color:#ff7a92">Sellers: ${fmtQ(r[1])} ${base()}</span><br>` : "") +
-      (r[0] > 0 ? `<span style="color:#4fe0ad">Buyers: ${fmtQ(r[0])} ${base()}</span><br>` : "") +
+      (r[1] > 0 ? `<span style="color:#ff7a92">Sellers${S.src === "kalshi" ? " (all exchanges)" : ""}: ${fmtQ(r[1])} ${base()}</span><br>` : "") +
+      (r[0] > 0 ? `<span style="color:#4fe0ad">Buyers${S.src === "kalshi" ? " (all exchanges)" : ""}: ${fmtQ(r[0])} ${base()}</span><br>` : "") +
       (r[0] <= 0 && r[1] <= 0 ? `<span class="hint">No resting orders</span><br>` : "") +
       `<span class="hint">${((mp / S.last - 1) * 100).toFixed(2)}% from price</span>`;
     tip.style.display = "block";
@@ -508,6 +791,23 @@ function updateHeader() {
   if (!S.last || !S.calc) return;
   const C = S.calc, c = S.candles.at(-1);
   const pe = $("price"); pe.textContent = fmtP(S.last); pe.className = "price " + (c && c.c >= c.o ? "up" : "down");
+  const kw = S.kw = kalshiWindows();
+  const mmss = sec => { sec = Math.max(0, Math.floor(sec)); return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`; };
+  if (S.src === "kalshi") {
+    $("kTarget").textContent = kw.target ? fmtP(kw.target) : "waiting…";
+    $("kTarget").title = kw.target ? "Average of the index over the 60 seconds before this 15-minute window opened" : "Needs the app open during the minute before the window starts";
+    const av = $("kAvg");
+    if (kw.live60 != null) {
+      const diff = kw.target ? kw.live60 - kw.target : null;
+      av.innerHTML = fmtP(kw.live60) + (diff != null ? ` <span class="${diff >= 0 ? "up" : "down"}">${diff >= 0 ? "▲ +" : "▼ "}${fmtP(diff)}</span>` : "");
+    } else av.textContent = "—";
+    const left15 = kw.close15 - kw.now, leftH = kw.closeH - kw.now;
+    $("kCd").textContent = `${mmss(left15)}  ·  1h ${mmss(leftH)}`;
+    $("kCdLbl").textContent = "15-min · hourly close in";
+  } else {
+    const iv = IX.val;
+    $("ixVal").innerHTML = iv ? `${fmtP(iv)} <span class="hint">(${iv - S.last >= 0 ? "+" : ""}${fmtP(iv - S.last)})</span>` : "—";
+  }
   const bb = bestBid(), ba = bestAsk();
   $("spread").textContent = isFinite(bb) && isFinite(ba) ? fmtP(ba - bb) : "—";
   $("bidTot").textContent = `${fmtQ(C.bt)} ${base()}`; $("askTot").textContent = `${fmtQ(C.at)} ${base()}`;
@@ -518,21 +818,33 @@ function updateHeader() {
   const row = w => { const dist = (w.p / S.last - 1) * 100;
     return `<span class="w ${w.side}"><strong>${w.side === "sell" ? "Sell wall" : "Buy wall"}</strong> ~${fmtP(Math.round(w.p / bStep) * bStep, bStep)} · ${fmtQ(w.q)} ${base()} <span class="hint">(${dist >= 0 ? "+" : ""}${dist.toFixed(2)}%)</span></span>`; };
   const asks = C.walls.filter(w => w.side === "sell").sort((a, b) => a.p - b.p), bids = C.walls.filter(w => w.side === "buy").sort((a, b) => b.p - a.p);
-  $("walls").innerHTML = asks.length || bids.length ? asks.map(row).join("") + bids.map(row).join("")
-    : `<span class="hint">No walls above ${S.sens}× the typical row size in this range. Lower "Wall size" or widen the range.</span>`;
+  const src = S.src === "kalshi" ? `<span class="w hint">Index est. from ${IX.used.length}/${EX.length} exchanges${IX.used.length < EX.length ? " (" + EX.filter(e => !IX.used.includes(e.name)).map(e => e.name).join(", ") + " offline)" : ""} · not the official feed</span>` : "";
+  $("walls").innerHTML = (asks.length || bids.length ? asks.map(row).join("") + bids.map(row).join("")
+    : `<span class="hint">No walls above ${S.sens}× the typical row size in this range. Lower "Wall size" or widen the range.</span>`) + src;
 }
 
 // ======================= interaction =======================
 function restart() {
-  S.gen++; S.candles = []; S.last = null; S.calc = null; S.bars.clear(); S.wallFx.clear();
+  S.gen++; S.candles = []; S.cb = []; S.ix = []; IX.sec = []; IX.val = null; S.last = null; S.cbLast = null; S.calc = null; S.bars.clear(); S.wallFx.clear();
+  if (S.src === "kalshi") S.candles = S.ix; else S.candles = S.cb;
   S.v.center = null; S.v.off = S.v.offT = 0; S.v.bMax = 0;
   hmReset();
-  $("title").textContent = S.product; document.title = `${S.product} · Live Candles + Walls`;
+  $("title").textContent = S.src === "kalshi" ? `${base()} · Kalshi index` : S.product; document.title = `${S.product} · Live Candles + Walls`;
   $("walls").innerHTML = `<span class="hint">Connecting to Coinbase…</span>`;
-  connect(); loadCandles();
+  connect(); connectExchanges(); loadCandles();
 }
+function setSrc(src) {
+  S.src = src;
+  document.body.classList.toggle("kalshi", src === "kalshi");
+  for (const b of document.querySelectorAll("#srcSeg button")) b.classList.toggle("on", b.dataset.src === src);
+  if (src === "kalshi") { rebuildIx(); S.candles = S.ix; S.last = IX.val; } else { S.candles = S.cb; S.last = S.cbLast; }
+  $("title").textContent = src === "kalshi" ? `${base()} · Kalshi index` : S.product;
+  S.calc = null; S.bars.clear(); S.wallFx.clear(); S.v.center = null; S.v.off = S.v.offT = 0;
+  hmReset(); save();
+}
+for (const b of document.querySelectorAll("#srcSeg button")) b.onclick = () => setSrc(b.dataset.src);
 $("product").onchange = e => { S.product = e.target.value; restart(); };
-$("tf").onchange = e => { S.tf = +e.target.value; S.candles = []; S.v.off = S.v.offT = 0; hmReset(); loadCandles(); };
+$("tf").onchange = e => { S.tf = +e.target.value; S.cb = []; S.ix = []; S.candles = S.src === "kalshi" ? S.ix : S.cb; S.v.off = S.v.offT = 0; hmReset(); rebuildIx(); loadCandles(); };
 $("range").onchange = e => { if (e.target.value) S.v.rangeT = +e.target.value; };
 $("sens").oninput = e => { S.sens = +e.target.value; $("sensv").textContent = S.sens + "×"; };
 $("heat").onchange = e => { S.heat = e.target.checked; };
@@ -600,11 +912,12 @@ window.addEventListener("orientationchange", () => setTimeout(resize, 250));
 $("gear").onclick = e => { e.stopPropagation(); document.body.classList.toggle("settings"); };
 cv.addEventListener("pointerdown", () => document.body.classList.remove("settings"));
 $("showBook").onchange = e => { S.showBook = e.target.checked; save(); resize(); };
-function save() { try { localStorage.setItem("walls.prefs", JSON.stringify({ product: S.product, tf: S.tf, sens: S.sens, heat: S.heat, showBook: S.showBook, range: S.v.rangeT })); } catch {} }
+function save() { try { localStorage.setItem("walls.prefs", JSON.stringify({ src: S.src, product: S.product, tf: S.tf, sens: S.sens, heat: S.heat, showBook: S.showBook, range: S.v.rangeT })); } catch {} }
 function loadPrefs() {
   try {
     const p = JSON.parse(localStorage.getItem("walls.prefs") || "{}");
     if (p.product) { S.product = p.product; $("product").value = p.product; }
+    if (p.src === "kalshi") { S.src = "kalshi"; document.body.classList.add("kalshi"); for (const b of document.querySelectorAll("#srcSeg button")) b.classList.toggle("on", b.dataset.src === "kalshi"); }
     if (p.tf) { S.tf = p.tf; $("tf").value = String(p.tf); }
     if (p.sens) { S.sens = p.sens; $("sens").value = p.sens; $("sensv").textContent = p.sens + "×"; }
     if (p.heat === false) { S.heat = false; $("heat").checked = false; }
@@ -618,7 +931,9 @@ for (const id of ["product", "tf", "range", "sens", "heat"]) $(id).addEventListe
 // ======================= loops =======================
 loadPrefs(); resize(); if (S.small) S.v.cw = S.v.cwT = 6; restart();
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) navigator.serviceWorker.register("sw.js").catch(() => {});
-setInterval(() => { if (S.bookReady && S.last) recalc(); }, 80);
+setInterval(indexTick, 500);
+window.__walls = { S, IX, EX };   // handy for debugging in the browser console
+setInterval(() => { if (S.last && viewBooks().length) recalc(); }, 80);
 setInterval(hmSample, 250);
 setInterval(updateHeader, 200);
 setInterval(() => { if (document.visibilityState === "visible") loadCandles(); }, 60000);
