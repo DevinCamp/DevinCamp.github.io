@@ -1,4 +1,4 @@
-// Kalshi official-index relay.
+// Kalshi official-index relay + up/down push alerts.
 // Holds one signed connection to Kalshi's CF Benchmarks value feed (the index Kalshi's crypto
 // markets settle on) and passes the values to the Live Walls Chart app over a plain WebSocket.
 // The Kalshi key never leaves Cloudflare; apps authenticate with RELAY_CODE.
@@ -15,7 +15,8 @@ export default {
       if (req.headers.get("Upgrade") !== "websocket") return new Response("Expected a WebSocket", { status: 426 });
       return stub.fetch(req);
     }
-    if (url.pathname === "/status") return stub.fetch(req);
+    if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
+    if (["/status", "/vapid", "/subscribe", "/unsubscribe", "/signals", "/test-push"].includes(url.pathname)) return stub.fetch(req);
     return new Response("Kalshi relay is running. Connect the app to /ws.\n", { headers: { "content-type": "text/plain" } });
   },
 };
@@ -30,6 +31,65 @@ export class Relay extends DurableObject {
     this.hist = new Map();          // index id -> [[sec, value]]
     this.last = new Map();          // index id -> latest message for apps
     this.connecting = null;
+    this.subs = null;               // push subscriptions (loaded from storage)
+    this.sigState = new Map();      // "coin:sens" -> { ema, armed, last }
+    this.sigErr = "";
+  }
+
+  async getSubs() {
+    if (!this.subs) this.subs = new Map(await this.ctx.storage.list({ prefix: "sub:" }));
+    return this.subs;
+  }
+  async vapid() {
+    if (this.vk) return this.vk;
+    let v = await this.ctx.storage.get("vapid");
+    if (!v) {
+      const kp = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+      v = { jwk: await crypto.subtle.exportKey("jwk", kp.privateKey), pub: b64u(await crypto.subtle.exportKey("raw", kp.publicKey)) };
+      await this.ctx.storage.put("vapid", v);
+    }
+    this.vk = { pub: v.pub, key: await crypto.subtle.importKey("jwk", v.jwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]) };
+    return this.vk;
+  }
+
+  // Same rules as the app: buyers vs sellers within ±0.25% of mid on Coinbase, smoothed; fire on a clear
+  // takeover, re-arm when the book crosses back toward balance, 5-minute cooldown per direction.
+  async signalTick() {
+    const subs = await this.getSubs(); if (!subs.size) return;
+    const coins = new Map();
+    for (const r of subs.values()) { if (!coins.has(r.coin)) coins.set(r.coin, new Set()); coins.get(r.coin).add(r.sens); }
+    const now = Math.floor(Date.now() / 1000);
+    for (const [coin, senses] of coins) {
+      const bk = await fetchBook(coin); if (!bk) continue;
+      const ratio = bookRatio(bk.bids, bk.asks, bk.mid, SIG_BAND); if (ratio == null) continue;
+      for (const sens of senses) {
+        const k = coin + ":" + sens; let st = this.sigState.get(k);
+        if (!st) this.sigState.set(k, st = { ema: null, armed: { up: true, down: true }, last: { up: 0, down: 0 } });
+        st.ema = st.ema == null ? ratio : st.ema + 0.4 * (ratio - st.ema);
+        const e = st.ema, [UP, DN] = SIG_LEVELS[sens];
+        if (e <= 0.5) st.armed.up = true;
+        if (e >= 0.5) st.armed.down = true;
+        let dir = null;
+        if (e >= UP && st.armed.up && now - st.last.up > SIG_COOLDOWN) dir = "up";
+        else if (e <= DN && st.armed.down && now - st.last.down > SIG_COOLDOWN) dir = "down";
+        if (!dir) continue;
+        st.armed[dir] = false; st.last[dir] = now;
+        const m = { t: now, dir, price: bk.mid, pct: Math.round((dir === "up" ? e : 1 - e) * 100), src: "relay" };
+        const hk = `sig:${coin}:${sens}`, hist = (await this.ctx.storage.get(hk)) || [];
+        hist.push(m); await this.ctx.storage.put(hk, hist.filter(x => x.t > now - 2 * 86400).slice(-500));
+        const up = dir === "up", baseSym = coin.split("-")[0];
+        const msg = { title: `${up ? "▲ UP" : "▼ DOWN"} · ${baseSym} ${fmtUsd(bk.mid)}`, body: `${up ? "Buyers" : "Sellers"} took over: ${m.pct}% of orders within 0.25% of price are ${up ? "buy" : "sell"} orders.`, tag: "walls-" + coin };
+        for (const [key, r] of subs) {
+          if (r.coin !== coin || r.sens !== sens) continue;
+          const res = await this.push(r, msg);
+          if (res.status === 404 || res.status === 410) { subs.delete(key); await this.ctx.storage.delete(key); }
+        }
+      }
+    }
+  }
+  async push(rec, msg) {
+    try { return await sendWebPush(rec.sub, JSON.stringify({ ...msg, url: "https://devincamp.github.io/walls/" }), await this.vapid()); }
+    catch (err) { return { ok: false, status: 0, error: String(err) }; }
   }
 
   async fetch(req) {
@@ -38,7 +98,26 @@ export class Relay extends DurableObject {
     if (url.pathname === "/status") {
       const ages = {};
       for (const [id, m] of this.last) ages[id] = Math.round((Date.now() - m.ts) / 1000) + "s ago";
-      return json({ upstream: this.upState, error: this.upError || undefined, latest: ages, apps: this.ctx.getWebSockets().length });
+      const subs = await this.getSubs();
+      return json({ upstream: this.upState, error: this.upError || undefined, latest: ages, apps: this.ctx.getWebSockets().length,
+        pushDevices: subs.size, signals: this.sigErr ? { error: this.sigErr } : Object.fromEntries([...this.sigState].map(([k, v]) => [k, v.ema != null ? Math.round(v.ema * 100) + "% buyers" : "–"])) });
+    }
+    if (url.pathname === "/vapid") return json({ key: (await this.vapid()).pub });
+    if (url.pathname === "/subscribe" || url.pathname === "/unsubscribe" || url.pathname === "/signals" || url.pathname === "/test-push") {
+      const auth = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+      if (!this.env.RELAY_CODE || auth !== this.env.RELAY_CODE) return json({ error: "wrong access code" }, 403);
+      if (url.pathname === "/signals") {
+        const coin = url.searchParams.get("coin") || "BTC-USD", sens = url.searchParams.get("sens") || "med";
+        return json({ signals: (await this.ctx.storage.get(`sig:${coin}:${sens}`)) || [] });
+      }
+      let body = {}; try { body = await req.json(); } catch {}
+      const sub = body.sub; if (!sub || !sub.endpoint) return json({ error: "missing subscription" }, 400);
+      const key = "sub:" + await sha(sub.endpoint), subs = await this.getSubs();
+      if (url.pathname === "/unsubscribe") { subs.delete(key); await this.ctx.storage.delete(key); return json({ ok: true }); }
+      const rec = { sub, coin: String(body.coin || "BTC-USD"), sens: SIG_LEVELS[body.sens] ? body.sens : "med", since: Date.now() };
+      subs.set(key, rec); await this.ctx.storage.put(key, rec);
+      if (url.pathname === "/test-push") { const r = await this.push(rec, { title: "✅ Push alerts are on", body: `You'll get ▲ / ▼ alerts for ${rec.coin} here.`, tag: "walls-test" }); return json({ ok: r.ok, status: r.status }); }
+      return json({ ok: true, devices: subs.size });
     }
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1]);
@@ -83,10 +162,15 @@ export class Relay extends DurableObject {
     this.broadcast({ t: "status", upstream: state, error: err || undefined });
   }
 
-  // keep the upstream connection alive; the alarm re-checks every 30 s
-  async alarm() { await this.ensureUpstream(); }
+  // the alarm runs every 15 s: keeps the Kalshi feed alive and checks order-book pressure for push alerts
+  async alarm() {
+    await this.ctx.storage.setAlarm(Date.now() + 15000);
+    await this.ensureUpstream();
+    try { await this.signalTick(); this.sigErr = ""; } catch (err) { this.sigErr = String(err && err.message || err); }
+  }
   async ensureUpstream() {
-    await this.ctx.storage.setAlarm(Date.now() + 30000);
+    if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now() + 15000);
+    if (!this.env.KALSHI_KEY_ID || !this.env.KALSHI_PRIVATE_KEY) { if (this.upState !== "off") this.setState("off", "Kalshi key not set (push alerts still work)"); return; }
     if (this.up || this.connecting) return this.connecting;
     this.connecting = this.connectUpstream().finally(() => { this.connecting = null; });
     return this.connecting;
@@ -139,8 +223,66 @@ export class Relay extends DurableObject {
   }
 }
 
+const SIG_LEVELS = { low: [0.70, 0.30], med: [0.64, 0.36], high: [0.58, 0.42] };
+const SIG_BAND = 0.0025, SIG_COOLDOWN = 300;
+const CORS = { "access-control-allow-origin": "*", "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "authorization, content-type" };
+function bookRatio(bids, asks, mid, band) {
+  let b = 0, a = 0; const lo = mid * (1 - band), hi = mid * (1 + band);
+  for (const [p, q] of bids) if (p >= lo && p <= mid) b += q;
+  for (const [p, q] of asks) if (p <= hi && p >= mid) a += q;
+  return b + a > 0 ? b / (b + a) : null;
+}
+// Coinbase order book near the price (public endpoint, no key)
+export async function fetchBook(coin) {
+  const r = await fetch(`https://api.coinbase.com/api/v3/brokerage/market/product_book?product_id=${encodeURIComponent(coin)}&limit=2000`, { headers: { "user-agent": "kalshi-relay" } });
+  if (!r.ok) throw new Error(`Coinbase book HTTP ${r.status}`);
+  const j = await r.json(), pb = j.pricebook || j;
+  const bids = (pb.bids || []).map(l => [+l.price, +l.size]), asks = (pb.asks || []).map(l => [+l.price, +l.size]);
+  if (!bids.length || !asks.length) return null;
+  return { bids, asks, mid: (bids[0][0] + asks[0][0]) / 2 };
+}
+function fmtUsd(x) { return "$" + x.toLocaleString("en-US", { minimumFractionDigits: x < 10 ? 4 : 2, maximumFractionDigits: x < 10 ? 4 : 2 }); }
+async function sha(s) { return b64u(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s))).slice(0, 22); }
+
+// ---------------- Web Push (RFC 8291 aes128gcm + RFC 8292 VAPID) ----------------
+export async function sendWebPush(sub, payload, vapid) {
+  const endpoint = new URL(sub.endpoint);
+  const uaPub = b64uDec(sub.keys.p256dh), authSecret = b64uDec(sub.keys.auth);
+  const eph = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+  const asPub = new Uint8Array(await crypto.subtle.exportKey("raw", eph.publicKey));
+  const uaKey = await crypto.subtle.importKey("raw", uaPub, { name: "ECDH", namedCurve: "P-256" }, false, []);
+  const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: uaKey }, eph.privateKey, 256));
+  const ikm = await hkdf(authSecret, shared, concat(utf8("WebPush: info\0"), uaPub, asPub), 32);
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const cek = await hkdf(salt, ikm, utf8("Content-Encoding: aes128gcm\0"), 16);
+  const nonce = await hkdf(salt, ikm, utf8("Content-Encoding: nonce\0"), 12);
+  const aes = await crypto.subtle.importKey("raw", cek, "AES-GCM", false, ["encrypt"]);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, aes, concat(utf8(payload), new Uint8Array([2]))));
+  const header = new Uint8Array(21 + asPub.length);
+  header.set(salt, 0); new DataView(header.buffer).setUint32(16, 4096); header[20] = asPub.length; header.set(asPub, 21);
+  const jwt = await vapidJwt(endpoint.origin, vapid.key);
+  const res = await fetch(sub.endpoint, { method: "POST", body: concat(header, ct), headers: {
+    "content-encoding": "aes128gcm", "content-type": "application/octet-stream", ttl: "600", urgency: "high",
+    authorization: `vapid t=${jwt}, k=${vapid.pub}` } });
+  return { ok: res.ok, status: res.status };
+}
+export async function vapidJwt(aud, key) {
+  const h = b64u(utf8(JSON.stringify({ typ: "JWT", alg: "ES256" })));
+  const p = b64u(utf8(JSON.stringify({ aud, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: "https://devincamp.github.io/walls/" })));
+  const sig = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, utf8(h + "." + p));
+  return h + "." + p + "." + b64u(sig);
+}
+async function hkdf(salt, ikm, info, len) {
+  const k = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
+  return new Uint8Array(await crypto.subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt, info }, k, len * 8));
+}
+const utf8 = s => new TextEncoder().encode(s);
+function concat(...a) { const o = new Uint8Array(a.reduce((n, x) => n + x.length, 0)); let i = 0; for (const x of a) { o.set(x, i); i += x.length; } return o; }
+function b64u(buf) { return b64(buf).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+function b64uDec(s) { s = s.replace(/-/g, "+").replace(/_/g, "/"); while (s.length % 4) s += "="; return Uint8Array.from(atob(s), c => c.charCodeAt(0)); }
+
 function num(x) { const n = typeof x === "string" ? parseFloat(x) : x; return typeof n === "number" && isFinite(n) ? n : null; }
-function json(o) { return new Response(JSON.stringify(o, null, 2), { headers: { "content-type": "application/json" } }); }
+function json(o, status = 200) { return new Response(JSON.stringify(o, null, 2), { status, headers: { "content-type": "application/json", ...CORS } }); }
 
 // ---------------- Kalshi request signing ----------------
 // Signature = base64( sign(timestamp_ms + METHOD + path) ) with RSA-PSS/SHA-256 (salt 32) or Ed25519.

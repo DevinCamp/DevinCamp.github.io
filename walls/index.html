@@ -31,6 +31,13 @@
   #kTarget { color: #f5c451; }
   .badge { font-size: 10px; font-weight: 700; letter-spacing: .04em; padding: 2px 6px; border-radius: 4px; background: #262c38; color: var(--muted); margin-left: 6px; }
   .badge.official { background: #123528; color: #4fe0ad; }
+  .dlg label.chk { flex-direction: row; align-items: center; gap: 8px; font-size: 14px; color: var(--text); }
+  .dlg label.chk input { width: 20px; height: 20px; }
+  .dlg select { font-size: 15px; padding: 8px; }
+  .dlg .box { border: 1px solid #2a3240; border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+  #pushStatus.ok { color: var(--up); } #pushStatus.bad { color: var(--down); }
+  #alertDlg { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 16px; overflow: auto; }
+  #alertDlg[hidden] { display: none; }
   #relayDlg { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 16px; }
   #relayDlg[hidden] { display: none; }
   .dlg { background: #151a22; border: 1px solid #2a3240; border-radius: 14px; padding: 18px; width: min(440px, 100%); display: flex; flex-direction: column; gap: 12px; box-shadow: 0 20px 50px rgba(0,0,0,.6); -webkit-user-select: text; user-select: text; }
@@ -154,13 +161,35 @@
     <label>Wall size <input id="sens" type="range" min="2" max="12" step="0.5" value="4"><span id="sensv">4×</span></label>
     <label><input id="heat" type="checkbox" checked> Heatmap</label>
     <label><input id="showBook" type="checkbox" checked> Order book</label>
+    <button id="alertBtn" type="button">🔔 Alerts…</button>
     <button id="relayBtn" type="button">Kalshi official feed…</button>
   </div>
 </header>
 <div id="wrap"><canvas id="cv"></canvas><div id="tip"></div>
   <div id="help">Scroll = zoom time · Shift+scroll or scroll on price axis = zoom price · Drag = pan · Drag order-book edge = resize · Double-click = reset</div></div>
 <div id="walls"><span class="hint">Connecting to Coinbase…</span></div>
-<div id="relayDlg" hidden>
+<div id="alertDlg" class="modal" hidden>
+  <form id="alertForm" class="dlg">
+    <h3>Up / down alerts</h3>
+    <p class="hint">Watches buyers vs sellers on the Coinbase order book within ±0.25% of the price. When one side clearly takes over it marks the chart (▲ buyers, ▼ sellers) and can notify you. It re-arms once the book settles back to balanced. This reads order-book pressure; it is not a guarantee of where price goes.</p>
+    <label class="chk"><input id="sigMarkers" type="checkbox" checked> Show ▲ ▼ markers on the chart</label>
+    <label>Sensitivity
+      <select id="sigSens">
+        <option value="low">Low: only strong imbalances (70 / 30)</option>
+        <option value="med" selected>Medium (64 / 36)</option>
+        <option value="high">High: more alerts (58 / 42)</option>
+      </select>
+    </label>
+    <label class="chk"><input id="sigNotify" type="checkbox"> Notify me while the app is open</label>
+    <div class="box">
+      <strong>Alerts when the app is closed</strong>
+      <div id="pushStatus" class="hint">Needs your Kalshi relay (set it up under "Kalshi official feed…").</div>
+      <button type="button" id="pushBtn">Enable push alerts on this device</button>
+    </div>
+    <div class="row"><button type="button" id="sigTest">Send test alert</button><span style="flex:1"></span><button type="submit" class="primary">Done</button></div>
+  </form>
+</div>
+<div id="relayDlg" class="modal" hidden>
   <form id="relayForm" class="dlg">
     <h3>Kalshi official feed</h3>
     <p class="hint">Connect to your private relay to show the official CF Benchmarks index that Kalshi settles on. Without it, Kalshi mode shows an estimate.</p>
@@ -470,6 +499,80 @@ function kdeMode(sizes) {
   return best;
 }
 
+// ---- up/down pressure signals (same rules as the relay uses for closed-app push alerts)
+const SIG_LEVELS = { low: [0.70, 0.30], med: [0.64, 0.36], high: [0.58, 0.42] };
+const SIG_BAND = 0.0025, SIG_COOLDOWN = 300;
+const SIG = { ema: null, armed: { up: true, down: true }, lastFire: { up: 0, down: 0 }, list: [], sens: "med", markers: true, notify: false, ratio: null };
+function sigKey() { return "walls.sig." + S.product; }
+function sigLoad() {
+  try { const p = JSON.parse(localStorage.getItem("walls.sigprefs") || "{}"); if (p.sens) SIG.sens = p.sens; if (p.markers === false) SIG.markers = false; if (p.notify) SIG.notify = true; } catch {}
+  try { SIG.list = JSON.parse(localStorage.getItem(sigKey()) || "[]").filter(m => m.t > Date.now() / 1000 - 2 * 86400); } catch { SIG.list = []; }
+  SIG.ema = null; SIG.armed = { up: true, down: true };
+}
+function sigSave() {
+  try { localStorage.setItem("walls.sigprefs", JSON.stringify({ sens: SIG.sens, markers: SIG.markers, notify: SIG.notify })); } catch {}
+  try { localStorage.setItem(sigKey(), JSON.stringify(SIG.list.slice(-300))); } catch {}
+}
+function bookRatio(bids, asks, mid, band) {
+  let b = 0, a = 0; const lo = mid * (1 - band), hi = mid * (1 + band);
+  for (const [p, q] of bids) if (p >= lo && p <= mid) b += q;
+  for (const [p, q] of asks) if (p <= hi && p >= mid) a += q;
+  return b + a > 0 ? b / (b + a) : null;
+}
+function sigTick() {
+  if (!S.bookReady || !S.cbLast) return;
+  const r = bookRatio(S.bids, S.asks, S.cbLast, SIG_BAND); if (r == null) return;
+  SIG.ratio = r;
+  SIG.ema = SIG.ema == null ? r : SIG.ema + 0.15 * (r - SIG.ema);      // ~30 s smoothing at 5 s steps
+  const e = SIG.ema, [UP, DN] = SIG_LEVELS[SIG.sens] || SIG_LEVELS.med, now = Math.floor(Date.now() / 1000);
+  if (e > 0.45 && e < 0.55) { SIG.armed.up = true; SIG.armed.down = true; }
+  if (e <= 0.5) SIG.armed.up = true;                                  // crossing back over the middle re-arms the other side
+  if (e >= 0.5) SIG.armed.down = true;
+  const fire = dir => {
+    SIG.armed[dir] = false; SIG.lastFire[dir] = now;
+    const price = S.src === "kalshi" && IX.val ? IX.val : S.cbLast;
+    const m = { t: now, dir, price, pct: Math.round((dir === "up" ? e : 1 - e) * 100), src: "app" };
+    if (SIG.list.some(x => Math.abs(x.t - m.t) < 120 && x.dir === dir)) return;
+    SIG.list.push(m); sigSave();
+    if (SIG.notify && !pushPref().on) notify(m);
+  };
+  if (e >= UP && SIG.armed.up && now - SIG.lastFire.up > SIG_COOLDOWN) fire("up");
+  else if (e <= DN && SIG.armed.down && now - SIG.lastFire.down > SIG_COOLDOWN) fire("down");
+}
+function sigText(m) {
+  const up = m.dir === "up";
+  return { title: `${up ? "▲ UP" : "▼ DOWN"} · ${base()} ${fmtP(m.price)}`,
+    body: `${up ? "Buyers" : "Sellers"} took over: ${m.pct}% of orders within 0.25% of price are ${up ? "buy" : "sell"} orders.` };
+}
+async function notify(m) {
+  const { title, body } = sigText(m);
+  try {
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+    const reg = navigator.serviceWorker && await navigator.serviceWorker.getRegistration();
+    const opts = { body, tag: "walls-" + S.product, renotify: true, icon: "icon-192.png", badge: "icon-192.png" };
+    if (reg) await reg.showNotification(title, opts); else new Notification(title, opts);
+  } catch (err) { console.warn("notification failed", err); }
+}
+function drawSignals(xOfIdx, y, iFirst, iLast, slot) {
+  if (!SIG.markers || !SIG.list.length || !S.candles.length) return;
+  const C = S.candles, t0 = C[iFirst] && C[iFirst].t, t1 = C[iLast] && C[iLast].t + S.tf;
+  ctx.font = "700 10px -apple-system, sans-serif"; ctx.textAlign = "center";
+  for (const m of SIG.list) {
+    if (m.t < t0 || m.t >= t1) continue;
+    let i = iLast; while (i > iFirst && C[i].t > m.t) i--;
+    const c = C[i], x = xOfIdx(i), up = m.dir === "up";
+    const yy = up ? y(c.l) + 10 : y(c.h) - 10, s = Math.max(5, Math.min(8, slot * 0.45));
+    ctx.fillStyle = up ? "#22c38e" : "#f0506e";
+    ctx.beginPath();
+    if (up) { ctx.moveTo(x, yy); ctx.lineTo(x - s, yy + s * 1.5); ctx.lineTo(x + s, yy + s * 1.5); }
+    else { ctx.moveTo(x, yy); ctx.lineTo(x - s, yy - s * 1.5); ctx.lineTo(x + s, yy - s * 1.5); }
+    ctx.closePath(); ctx.lineWidth = 2; ctx.strokeStyle = "#0b0e13"; ctx.stroke(); ctx.fill();
+    ctx.textBaseline = up ? "top" : "bottom";
+    ctx.fillText(up ? "UP" : "DN", x, up ? yy + s * 1.5 + 2 : yy - s * 1.5 - 2);
+  }
+  ctx.textAlign = "left";
+}
+
 // ---- official index via the user's private relay (Kalshi's CF Benchmarks value feed)
 const OFF = { url: "", code: "", ws: null, state: "off", err: "", val: null, a60: null, recv: 0, q15: new Map(), retry: 0 };
 function officialLive() { return OFF.state === "live" && Date.now() - OFF.recv < 5000 && OFF.val != null; }
@@ -752,6 +855,7 @@ function frame(dt) {
     ctx.fillRect(x - cw / 2, top, cw, Math.max(1, bot - top));
   }
   ctx.globalAlpha = 1;
+  drawSignals(xOfIdx, y, iFirst, iLast, slot);
   // ---- Kalshi 15-minute target (avg of the 60 s before the window opened)
   if (S.src === "kalshi" && S.kw && S.kw.target) {
     const ty = Math.round(y(S.kw.target)) + 0.5;
@@ -894,7 +998,7 @@ function updateHeader() {
   const bb = bestBid(), ba = bestAsk();
   $("spread").textContent = isFinite(bb) && isFinite(ba) ? fmtP(ba - bb) : "—";
   $("bidTot").textContent = `${fmtQ(C.bt)} ${base()}`; $("askTot").textContent = `${fmtQ(C.at)} ${base()}`;
-  const ratio = C.bt + C.at > 0 ? C.bt / (C.bt + C.at) : 0.5;
+  const ratio = SIG.ema != null ? SIG.ema : C.bt + C.at > 0 ? C.bt / (C.bt + C.at) : 0.5;   // same near-price reading the alerts use
   $("meter").style.width = (ratio * 100).toFixed(1) + "%";
   $("press").textContent = ratio > 0.55 ? `Buyers heavier · ${Math.round(ratio * 100)}%` : ratio < 0.45 ? `Sellers heavier · ${Math.round((1 - ratio) * 100)}%` : "Balanced";
   const bStep = C.bStep;
@@ -915,7 +1019,7 @@ function restart() {
   hmReset();
   $("title").textContent = S.src === "kalshi" ? `${base()} · Kalshi index` : S.product; document.title = `${S.product} · Live Candles + Walls`;
   $("walls").innerHTML = `<span class="hint">Connecting to Coinbase…</span>`;
-  OFF.q15.clear(); OFF.val = null;
+  OFF.q15.clear(); OFF.val = null; sigLoad(); setTimeout(() => { pushSync(); pullRelaySignals(); }, 1500);
   connect(); connectExchanges(); relayConnect(); loadCandles();
 }
 function setSrc(src) {
@@ -928,6 +1032,86 @@ function setSrc(src) {
   hmReset(); save();
 }
 for (const b of document.querySelectorAll("#srcSeg button")) b.onclick = () => setSrc(b.dataset.src);
+function openAlerts() {
+  $("sigMarkers").checked = SIG.markers; $("sigSens").value = SIG.sens; $("sigNotify").checked = SIG.notify;
+  pushStatusUI(); $("alertDlg").hidden = false; document.body.classList.remove("settings");
+}
+$("alertBtn").onclick = openAlerts;
+$("alertForm").onsubmit = e => { e.preventDefault(); $("alertDlg").hidden = true; };
+$("alertDlg").addEventListener("pointerdown", e => { if (e.target.id === "alertDlg") $("alertDlg").hidden = true; });
+$("sigMarkers").onchange = e => { SIG.markers = e.target.checked; sigSave(); };
+$("sigSens").onchange = e => { SIG.sens = e.target.value; sigSave(); pushSync(); };
+$("sigNotify").onchange = async e => {
+  if (e.target.checked && "Notification" in window && Notification.permission !== "granted") {
+    let p = "denied"; try { p = await Notification.requestPermission(); } catch {}
+    if (p !== "granted") { e.target.checked = false; alertMsg("Notifications are blocked for this app. Allow them in your phone or browser settings."); return; }
+  }
+  SIG.notify = e.target.checked; sigSave();
+};
+$("sigTest").onclick = async () => {
+  if ("Notification" in window && Notification.permission !== "granted") { try { await Notification.requestPermission(); } catch {} }
+  notify({ t: Math.floor(Date.now() / 1000), dir: "up", price: S.last || 0, pct: 66 });
+};
+// ---- closed-app push alerts through the user's relay
+function relayBase() { try { const u = new URL(OFF.url.trim()); return u.origin + u.pathname.replace(/\/+$/, ""); } catch { return null; } }
+const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent), standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
+function pushPref() { try { return JSON.parse(localStorage.getItem("walls.push") || "{}"); } catch { return {}; } }
+function pushStatusUI(msg, cls) {
+  const el = $("pushStatus"), btn = $("pushBtn"), on = pushPref().on;
+  if (msg) { el.textContent = msg; el.className = "hint " + (cls || ""); return; }
+  if (!relayBase() || !OFF.code) { el.textContent = 'Needs your Kalshi relay first (set it up under "Kalshi official feed…").'; el.className = "hint"; btn.disabled = true; return; }
+  btn.disabled = false;
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    el.textContent = isIOS && !standalone ? "On iPhone, open the app from its Home Screen icon to enable push." : "This app window can't receive push; you'll still get alerts while it's open.";
+    el.className = "hint"; btn.disabled = true; return;
+  }
+  el.textContent = on ? `On: alerts for ${pushPref().coin || S.product} arrive even when the app is closed.` : "Off on this device.";
+  el.className = "hint " + (on ? "ok" : ""); btn.textContent = on ? "Turn off push alerts" : "Enable push alerts on this device";
+}
+async function relayPost(path, body) {
+  const r = await fetch(relayBase() + path, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + OFF.code }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || "relay error " + r.status); return j;
+}
+function b64uBytes(s) { s = s.replace(/-/g, "+").replace(/_/g, "/"); while (s.length % 4) s += "="; return Uint8Array.from(atob(s), c => c.charCodeAt(0)); }
+async function pushEnable() {
+  pushStatusUI("Setting up…");
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") return pushStatusUI("Notifications are blocked. Allow them for this app in Settings, then try again.", "bad");
+    const reg = await navigator.serviceWorker.ready;
+    const { key } = await fetch(relayBase() + "/vapid").then(r => r.json());
+    let sub = await reg.pushManager.getSubscription();
+    if (sub && sub.options && sub.options.applicationServerKey && b64uFromBuf(sub.options.applicationServerKey) !== key) { await sub.unsubscribe(); sub = null; }
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uBytes(key) });
+    await relayPost("/test-push", { sub: sub.toJSON(), coin: S.product, sens: SIG.sens });
+    localStorage.setItem("walls.push", JSON.stringify({ on: true, coin: S.product }));
+    pushStatusUI(); SIG.notify = false; $("sigNotify").checked = false; sigSave();   // the relay notifies now; avoid doubles
+  } catch (err) { pushStatusUI("Couldn't enable push: " + err.message, "bad"); }
+}
+function b64uFromBuf(buf) { let s = ""; for (const b of new Uint8Array(buf)) s += String.fromCharCode(b); return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+async function pushDisable() {
+  try { const reg = await navigator.serviceWorker.ready, sub = await reg.pushManager.getSubscription();
+    if (sub) { await relayPost("/unsubscribe", { sub: sub.toJSON() }).catch(() => {}); await sub.unsubscribe(); } } catch {}
+  localStorage.setItem("walls.push", JSON.stringify({ on: false })); pushStatusUI();
+}
+async function pushSync() {                     // keep the relay's copy of coin + sensitivity current
+  if (!pushPref().on || !relayBase() || !("serviceWorker" in navigator)) return;
+  try { const reg = await navigator.serviceWorker.ready, sub = await reg.pushManager.getSubscription(); if (!sub) return;
+    await relayPost("/subscribe", { sub: sub.toJSON(), coin: S.product, sens: SIG.sens });
+    localStorage.setItem("walls.push", JSON.stringify({ on: true, coin: S.product })); } catch {}
+}
+async function pullRelaySignals() {             // markers the relay fired while the app was closed
+  if (!relayBase() || !OFF.code) return;
+  try {
+    const r = await fetch(`${relayBase()}/signals?coin=${encodeURIComponent(S.product)}&sens=${SIG.sens}`, { headers: { authorization: "Bearer " + OFF.code } });
+    if (!r.ok) return; const { signals } = await r.json();
+    let added = 0;
+    for (const m of signals || []) if (!SIG.list.some(x => x.dir === m.dir && Math.abs(x.t - m.t) < 120)) { SIG.list.push(m); added++; }
+    if (added) { SIG.list.sort((a, b) => a.t - b.t); sigSave(); }
+  } catch {}
+}
+$("pushBtn").onclick = () => pushPref().on ? pushDisable() : pushEnable();
+function alertMsg(t) { const el = $("pushStatus"); el.textContent = t; el.className = "hint bad"; }
 $("relayBtn").onclick = () => { $("relayUrl").value = OFF.url; $("relayCode").value = OFF.code; relayStatusUI(); $("relayDlg").hidden = false; document.body.classList.remove("settings"); };
 $("relayCancel").onclick = () => { $("relayDlg").hidden = true; };
 $("relayDlg").addEventListener("pointerdown", e => { if (e.target.id === "relayDlg") $("relayDlg").hidden = true; });
@@ -1022,7 +1206,9 @@ for (const id of ["product", "tf", "range", "sens", "heat"]) $(id).addEventListe
 loadPrefs(); loadRelay(); resize(); if (S.small) S.v.cw = S.v.cwT = 6; restart();
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) navigator.serviceWorker.register("sw.js").catch(() => {});
 setInterval(indexTick, 500);
-window.__walls = { S, IX, EX };   // handy for debugging in the browser console
+setInterval(sigTick, 5000);
+setInterval(pullRelaySignals, 60000); setTimeout(pullRelaySignals, 3000);
+window.__walls = { S, IX, EX, SIG };   // handy for debugging in the browser console
 setInterval(() => { if (S.last && viewBooks().length) recalc(); }, 80);
 setInterval(hmSample, 250);
 setInterval(updateHeader, 200);
