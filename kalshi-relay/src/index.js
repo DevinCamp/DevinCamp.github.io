@@ -16,7 +16,7 @@ export default {
       return stub.fetch(req);
     }
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
-    if (["/status", "/vapid", "/subscribe", "/unsubscribe", "/signals", "/test-push"].includes(url.pathname)) return stub.fetch(req);
+    if (["/status", "/vapid", "/subscribe", "/unsubscribe", "/signals", "/test-push", "/results"].includes(url.pathname)) return stub.fetch(req);
     return new Response("Kalshi relay is running. Connect the app to /ws.\n", { headers: { "content-type": "text/plain" } });
   },
 };
@@ -55,13 +55,15 @@ export class Relay extends DurableObject {
   // Same rules as the app: buyers vs sellers within ±0.25% of mid on Coinbase, smoothed; fire on a clear
   // takeover, re-arm when the book crosses back toward balance, 5-minute cooldown per direction.
   async signalTick() {
-    const subs = await this.getSubs(); if (!subs.size) return;
+    const subs = await this.getSubs();
     const coins = new Map();
+    for (const c of String(this.env.PRED_COINS || "BTC-USD").split(",").map(x => x.trim()).filter(Boolean)) coins.set(c, new Set());
     for (const r of subs.values()) { if (!coins.has(r.coin)) coins.set(r.coin, new Set()); coins.get(r.coin).add(r.sens); }
     const now = Math.floor(Date.now() / 1000);
     for (const [coin, senses] of coins) {
       const bk = await fetchBook(coin); if (!bk) continue;
       const ratio = bookRatio(bk.bids, bk.asks, bk.mid, SIG_BAND); if (ratio == null) continue;
+      await this.recordPrediction(coin, ratio, now, bk.mid);
       for (const sens of senses) {
         const k = coin + ":" + sens; let st = this.sigState.get(k);
         if (!st) this.sigState.set(k, st = { ema: null, armed: { up: true, down: true }, last: { up: 0, down: 0 } });
@@ -87,6 +89,44 @@ export class Relay extends DurableObject {
       }
     }
   }
+  // The app's "prediction" for a 15-min window = which side the order book leaned to (smoothed, ±0.25%)
+  // at the start of the window's final minute, i.e. right before Kalshi's settlement averaging begins.
+  async recordPrediction(coin, ratio, now, mid) {
+    const k = "pred:" + coin; let st = this.predState && this.predState.get(k);
+    if (!this.predState) this.predState = new Map();
+    if (!st) this.predState.set(k, st = { ema: null });
+    st.ema = st.ema == null ? ratio : st.ema + 0.4 * (ratio - st.ema);
+    const close = Math.ceil((now + 1) / 900) * 900, left = close - now;
+    if (left > 75 || left < 45 || st.saved === close) return;           // first tick inside the last ~minute's start
+    st.saved = close;
+    const hist = (await this.ctx.storage.get(k)) || [];
+    if (hist.some(x => x.close === close)) return;
+    hist.push({ close, buyPct: Math.round(st.ema * 100), dir: st.ema >= 0.5 ? "up" : "down", price: mid });
+    await this.ctx.storage.put(k, hist.filter(x => x.close > now - 7 * 86400).slice(-800));
+  }
+  async results(coin, limit) {
+    const series = SERIES[coin]; if (!series) throw new Error("No Kalshi 15-minute series for " + coin);
+    const now = Date.now();
+    if (!this.resCache) this.resCache = new Map();
+    let c = this.resCache.get(series);
+    if (!c || now - c.at > 60000) {
+      const r = await fetch(`https://api.elections.kalshi.com/trade-api/v2/markets?series_ticker=${series}&status=settled&limit=${Math.max(limit, 100)}`, { headers: { accept: "application/json" } });
+      if (!r.ok) throw new Error(`Kalshi markets HTTP ${r.status}`);
+      const j = await r.json();
+      c = { at: now, markets: j.markets || [] }; this.resCache.set(series, c);
+    }
+    const preds = new Map(((await this.ctx.storage.get("pred:" + coin)) || []).map(p => [p.close, p]));
+    const rows = c.markets.map(m => {
+      const close = Math.round(Date.parse(m.close_time) / 1000);
+      const target = num(m.floor_strike), final = num(m.expiration_value);
+      const res = String(m.result || "").toLowerCase();
+      const outcome = res === "yes" ? "up" : res === "no" ? "down" : null;
+      const p = preds.get(close);
+      return { close, ticker: m.ticker, target, final, outcome, volume: num(m.volume ?? m.volume_fp),
+        pred: p ? { dir: p.dir, buyPct: p.buyPct } : null, hit: p && outcome ? p.dir === outcome : null };
+    }).filter(r => r.close && r.outcome).sort((a, b) => b.close - a.close).slice(0, limit);
+    return { coin, series, rows, trackedSince: preds.size ? Math.min(...preds.keys()) : null };
+  }
   async push(rec, msg) {
     try { return await sendWebPush(rec.sub, JSON.stringify({ ...msg, url: "https://devincamp.github.io/walls/" }), await this.vapid()); }
     catch (err) { return { ok: false, status: 0, error: String(err) }; }
@@ -103,9 +143,14 @@ export class Relay extends DurableObject {
         pushDevices: subs.size, signals: this.sigErr ? { error: this.sigErr } : Object.fromEntries([...this.sigState].map(([k, v]) => [k, v.ema != null ? Math.round(v.ema * 100) + "% buyers" : "–"])) });
     }
     if (url.pathname === "/vapid") return json({ key: (await this.vapid()).pub });
-    if (url.pathname === "/subscribe" || url.pathname === "/unsubscribe" || url.pathname === "/signals" || url.pathname === "/test-push") {
+    if (url.pathname === "/subscribe" || url.pathname === "/unsubscribe" || url.pathname === "/signals" || url.pathname === "/test-push" || url.pathname === "/results") {
       const auth = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
       if (!this.env.RELAY_CODE || auth !== this.env.RELAY_CODE) return json({ error: "wrong access code" }, 403);
+      if (url.pathname === "/results") {
+        const coin = url.searchParams.get("coin") || "BTC-USD";
+        try { return json(await this.results(coin, Math.min(200, +url.searchParams.get("limit") || 96))); }
+        catch (err) { return json({ error: String(err && err.message || err) }, 502); }
+      }
       if (url.pathname === "/signals") {
         const coin = url.searchParams.get("coin") || "BTC-USD", sens = url.searchParams.get("sens") || "med";
         return json({ signals: (await this.ctx.storage.get(`sig:${coin}:${sens}`)) || [] });
@@ -225,6 +270,7 @@ export class Relay extends DurableObject {
 
 const SIG_LEVELS = { low: [0.70, 0.30], med: [0.64, 0.36], high: [0.58, 0.42] };
 const SIG_BAND = 0.0025, SIG_COOLDOWN = 300;
+const SERIES = { "BTC-USD": "KXBTC15M", "ETH-USD": "KXETH15M", "SOL-USD": "KXSOL15M", "XRP-USD": "KXXRP15M", "DOGE-USD": "KXDOGE15M" };
 const CORS = { "access-control-allow-origin": "*", "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "authorization, content-type" };
 function bookRatio(bids, asks, mid, band) {
   let b = 0, a = 0; const lo = mid * (1 - band), hi = mid * (1 + band);
@@ -234,7 +280,7 @@ function bookRatio(bids, asks, mid, band) {
 }
 // Coinbase order book near the price (public endpoint, no key)
 export async function fetchBook(coin) {
-  const r = await fetch(`https://api.coinbase.com/api/v3/brokerage/market/product_book?product_id=${encodeURIComponent(coin)}&limit=2000`, { headers: { "user-agent": "kalshi-relay" } });
+  const r = await fetch(`https://api.coinbase.com/api/v3/brokerage/market/product_book?product_id=${encodeURIComponent(coin)}&limit=1000`, { headers: { "user-agent": "kalshi-relay" } });
   if (!r.ok) throw new Error(`Coinbase book HTTP ${r.status}`);
   const j = await r.json(), pb = j.pricebook || j;
   const bids = (pb.bids || []).map(l => [+l.price, +l.size]), asks = (pb.asks || []).map(l => [+l.price, +l.size]);

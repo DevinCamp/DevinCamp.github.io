@@ -9,6 +9,7 @@ compatibility_date = "2026-10-01"
 
 [vars]
 INDICES = "BRTI,ETHUSD_RTI,SOLUSD_RTI,XRPUSD_RTI,DOGEUSD_RTI"
+PRED_COINS = "BTC-USD,ETH-USD,SOL-USD,XRP-USD,DOGE-USD"
 KALSHI_WS_URL = "https://external-api-ws.kalshi.com/trade-api/ws/v2"
 
 [[durable_objects.bindings]]
