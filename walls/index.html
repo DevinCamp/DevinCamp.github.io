@@ -36,6 +36,20 @@
   .dlg select { font-size: 15px; padding: 8px; }
   .dlg .box { border: 1px solid #2a3240; border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
   #pushStatus.ok { color: var(--up); } #pushStatus.bad { color: var(--down); }
+  #resDlg { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 16px; }
+  #resDlg[hidden] { display: none; }
+  .dlg.wide { width: min(760px, 100%); max-height: 88vh; }
+  .tbl { overflow: auto; border: 1px solid #2a3240; border-radius: 10px; flex: 1; min-height: 120px; }
+  #resTable { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
+  #resTable th { position: sticky; top: 0; background: #1a202a; color: var(--muted); font-weight: 600; text-align: right; padding: 8px 10px; font-size: 11px; white-space: nowrap; }
+  #resTable td { padding: 7px 10px; border-top: 1px solid #1f2530; text-align: right; white-space: nowrap; }
+  #resTable th:first-child, #resTable td:first-child { text-align: left; }
+  .pill { display: inline-block; padding: 1px 7px; border-radius: 10px; font-weight: 700; font-size: 11px; }
+  .pill.up { background: #123528; color: #4fe0ad; } .pill.down { background: #3a1520; color: #ff7a92; }
+  .stat.res { background: none; border: 0; padding: 0; text-align: left; cursor: pointer; color: inherit; font: inherit; }
+  .dots { letter-spacing: 1px; font-size: 13px; }
+  .dots .u { color: var(--up); } .dots .d { color: var(--down); }
+  body:not(.kalshi) .stat.res { display: none; }
   #alertDlg { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 16px; overflow: auto; }
   #alertDlg[hidden] { display: none; }
   #relayDlg { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 16px; }
@@ -132,6 +146,7 @@
   <div class="stat kal"><small>15-min target</small><span id="kTarget">—</span></div>
   <div class="stat kal"><small>Last 60s avg</small><span id="kAvg">—</span></div>
   <div class="stat kal"><small id="kCdLbl">15-min closes in</small><span id="kCd">—</span></div>
+  <button class="stat res" id="resStrip" type="button" title="Past 15-minute results"><small>Last 15-min results</small><span id="resDots" class="dots">—</span></button>
   <div class="stat cbo"><small>Kalshi index</small><span id="ixVal">—</span></div>
   <div class="stat cbo"><small>Spread</small><span id="spread">—</span></div>
   <div class="stat"><small>Buyers in view</small><span id="bidTot" style="color:var(--up)">—</span></div>
@@ -161,6 +176,7 @@
     <label>Wall size <input id="sens" type="range" min="2" max="12" step="0.5" value="4"><span id="sensv">4×</span></label>
     <label><input id="heat" type="checkbox" checked> Heatmap</label>
     <label><input id="showBook" type="checkbox" checked> Order book</label>
+    <button id="resBtn" type="button">📊 15-min results…</button>
     <button id="alertBtn" type="button">🔔 Alerts…</button>
     <button id="relayBtn" type="button">Kalshi official feed…</button>
   </div>
@@ -168,6 +184,14 @@
 <div id="wrap"><canvas id="cv"></canvas><div id="tip"></div>
   <div id="help">Scroll = zoom time · Shift+scroll or scroll on price axis = zoom price · Drag = pan · Drag order-book edge = resize · Double-click = reset</div></div>
 <div id="walls"><span class="hint">Connecting to Coinbase…</span></div>
+<div id="resDlg" class="modal" hidden>
+  <div class="dlg wide">
+    <div class="row" style="align-items:center"><h3 id="resTitle">Past 15-minute results</h3><span style="flex:1"></span><button type="button" id="resClose">Close</button></div>
+    <div id="resSummary" class="hint"></div>
+    <div class="tbl"><table id="resTable"><thead><tr><th>Window closed</th><th>Target</th><th>Final</th><th>Move</th><th>Result</th><th>App's read*</th><th></th></tr></thead><tbody></tbody></table></div>
+    <p class="hint" style="font-size:11px">Results are Kalshi's settled 15-minute Up/Down markets (final 60-second average of the CF Benchmarks index vs. the target). *App's read = which side the order book leaned to (±0.25%, smoothed) one minute before the close, recorded by your relay; it starts from when the relay began tracking. Past results don't guarantee future ones.</p>
+  </div>
+</div>
 <div id="alertDlg" class="modal" hidden>
   <form id="alertForm" class="dlg">
     <h3>Up / down alerts</h3>
@@ -573,6 +597,60 @@ function drawSignals(xOfIdx, y, iFirst, iLast, slot) {
   ctx.textAlign = "left";
 }
 
+// ---- past 15-minute Kalshi results (via the relay)
+const RES = { coin: null, rows: [], at: 0, err: "", since: null };
+async function loadResults(force) {
+  if (!relayBase() || !OFF.code) { RES.err = 'Connect your relay first (⚙ → "Kalshi official feed…").'; RES.rows = []; renderResults(); return; }
+  if (!force && RES.coin === S.product && Date.now() - RES.at < 55000) return;
+  try {
+    const r = await fetch(`${relayBase()}/results?coin=${encodeURIComponent(S.product)}&limit=96`, { headers: { authorization: "Bearer " + OFF.code } });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || "relay error " + r.status);
+    RES.coin = S.product; RES.rows = j.rows || []; RES.since = j.trackedSince; RES.at = Date.now(); RES.err = "";
+  } catch (err) { RES.err = /404|Not Found/.test(err.message) ? "Your relay needs the latest update (it updates automatically from GitHub)." : "Couldn't load results: " + err.message; }
+  renderResults();
+}
+function renderResults() {
+  const dots = $("resDots");
+  const last = RES.rows.slice(0, 8).reverse();
+  dots.innerHTML = RES.err || !last.length ? "—" : last.map(r => `<span class="${r.outcome === "up" ? "u" : "d"}">${r.outcome === "up" ? "▲" : "▼"}</span>`).join("");
+  dots.title = RES.err || "";
+  if ($("resDlg").hidden) return;
+  $("resTitle").textContent = `Past 15-minute results · ${base()}`;
+  const tb = $("resTable").tBodies[0];
+  if (RES.err) { $("resSummary").textContent = RES.err; tb.innerHTML = ""; return; }
+  const n = RES.rows.length, ups = RES.rows.filter(r => r.outcome === "up").length;
+  const graded = RES.rows.filter(r => r.hit != null), hits = graded.filter(r => r.hit).length;
+  let streak = 0; for (const r of RES.rows) { if (r.outcome === RES.rows[0].outcome) streak++; else break; }
+  const g24 = graded.slice(0, 24), h24 = g24.filter(r => r.hit).length;
+  $("resSummary").innerHTML = n ? `Last ${n} windows: <b class="up">${ups} UP</b> · <b class="down">${n - ups} DOWN</b> · current streak ${streak} ${RES.rows[0].outcome.toUpperCase()}` +
+    (graded.length ? `<br>App's read was right <b>${hits} of ${graded.length}</b> (${Math.round(hits / graded.length * 100)}%)` + (graded.length > 24 ? ` · last 24: ${h24}/24 (${Math.round(h24 / 24 * 100)}%)` : "") : "<br>App's read: the relay records it from now on; check back after a few windows.")
+    : "No settled windows found yet.";
+  const tf = new Intl.DateTimeFormat([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  tb.innerHTML = RES.rows.map(r => {
+    const mv = r.final != null && r.target != null ? r.final - r.target : null;
+    return `<tr><td>${tf.format(new Date(r.close * 1000))}</td><td>${r.target != null ? fmtP(r.target) : "—"}</td><td>${r.final != null ? fmtP(r.final) : "—"}</td>` +
+      `<td class="${mv >= 0 ? "up" : "down"}">${mv != null ? (mv >= 0 ? "+" : "") + fmtP(mv) : "—"}</td>` +
+      `<td><span class="pill ${r.outcome}">${r.outcome === "up" ? "▲ UP" : "▼ DOWN"}</span></td>` +
+      `<td>${r.pred ? `<span class="${r.pred.dir}">${r.pred.dir === "up" ? "▲" : "▼"} ${r.pred.dir === "up" ? r.pred.buyPct : 100 - r.pred.buyPct}%</span>` : '<span class="hint">—</span>'}</td>` +
+      `<td>${r.hit == null ? "" : r.hit ? '<span class="up">✓</span>' : '<span class="down">✗</span>'}</td></tr>`;
+  }).join("");
+}
+function openResults() { $("resDlg").hidden = false; document.body.classList.remove("settings"); renderResults(); loadResults(true); }
+function drawResults(xOfIdx, iFirst, iLast) {      // small ▲/▼ result tags at the top of the chart at each window close
+  if (S.src !== "kalshi" || !RES.rows.length || RES.coin !== S.product) return;
+  const C = S.candles, t0 = C[iFirst] && C[iFirst].t, t1 = C[iLast] && C[iLast].t + S.tf;
+  ctx.font = "700 10px -apple-system, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "top";
+  for (const r of RES.rows) {
+    const tClose = r.close - 1; if (tClose < t0 || tClose >= t1) continue;
+    let i = iLast; while (i > iFirst && C[i].t > tClose) i--;
+    const x = xOfIdx(i), up = r.outcome === "up";
+    ctx.strokeStyle = "rgba(125,134,150,.18)"; ctx.setLineDash([2, 4]); ctx.beginPath(); ctx.moveTo(Math.round(x) + 0.5, PAD_T + 16); ctx.lineTo(Math.round(x) + 0.5, H); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = up ? "#22c38e" : "#f0506e"; ctx.fillText(up ? "▲" : "▼", x, PAD_T + 2);
+  }
+  ctx.textAlign = "left";
+}
+
 // ---- official index via the user's private relay (Kalshi's CF Benchmarks value feed)
 const OFF = { url: "", code: "", ws: null, state: "off", err: "", val: null, a60: null, recv: 0, q15: new Map(), retry: 0 };
 function officialLive() { return OFF.state === "live" && Date.now() - OFF.recv < 5000 && OFF.val != null; }
@@ -856,6 +934,7 @@ function frame(dt) {
   }
   ctx.globalAlpha = 1;
   drawSignals(xOfIdx, y, iFirst, iLast, slot);
+  drawResults(xOfIdx, iFirst, iLast);
   // ---- Kalshi 15-minute target (avg of the 60 s before the window opened)
   if (S.src === "kalshi" && S.kw && S.kw.target) {
     const ty = Math.round(y(S.kw.target)) + 0.5;
@@ -1019,7 +1098,7 @@ function restart() {
   hmReset();
   $("title").textContent = S.src === "kalshi" ? `${base()} · Kalshi index` : S.product; document.title = `${S.product} · Live Candles + Walls`;
   $("walls").innerHTML = `<span class="hint">Connecting to Coinbase…</span>`;
-  OFF.q15.clear(); OFF.val = null; sigLoad(); setTimeout(() => { pushSync(); pullRelaySignals(); }, 1500);
+  OFF.q15.clear(); OFF.val = null; sigLoad(); RES.rows = []; RES.coin = null; setTimeout(() => loadResults(true), 2000); setTimeout(() => { pushSync(); pullRelaySignals(); }, 1500);
   connect(); connectExchanges(); relayConnect(); loadCandles();
 }
 function setSrc(src) {
@@ -1037,6 +1116,9 @@ function openAlerts() {
   pushStatusUI(); $("alertDlg").hidden = false; document.body.classList.remove("settings");
 }
 $("alertBtn").onclick = openAlerts;
+$("resBtn").onclick = openResults; $("resStrip").onclick = openResults;
+$("resClose").onclick = () => { $("resDlg").hidden = true; };
+$("resDlg").addEventListener("pointerdown", e => { if (e.target.id === "resDlg") $("resDlg").hidden = true; });
 $("alertForm").onsubmit = e => { e.preventDefault(); $("alertDlg").hidden = true; };
 $("alertDlg").addEventListener("pointerdown", e => { if (e.target.id === "alertDlg") $("alertDlg").hidden = true; });
 $("sigMarkers").onchange = e => { SIG.markers = e.target.checked; sigSave(); };
@@ -1115,7 +1197,7 @@ function alertMsg(t) { const el = $("pushStatus"); el.textContent = t; el.classN
 $("relayBtn").onclick = () => { $("relayUrl").value = OFF.url; $("relayCode").value = OFF.code; relayStatusUI(); $("relayDlg").hidden = false; document.body.classList.remove("settings"); };
 $("relayCancel").onclick = () => { $("relayDlg").hidden = true; };
 $("relayDlg").addEventListener("pointerdown", e => { if (e.target.id === "relayDlg") $("relayDlg").hidden = true; });
-$("relayForm").onsubmit = e => { e.preventDefault(); OFF.url = $("relayUrl").value.trim(); OFF.code = $("relayCode").value; saveRelay(); relayConnect(); };
+$("relayForm").onsubmit = e => { e.preventDefault(); OFF.url = $("relayUrl").value.trim(); OFF.code = $("relayCode").value; saveRelay(); relayConnect(); loadResults(true); };
 $("relayOff").onclick = () => { OFF.url = ""; OFF.code = ""; saveRelay(); relayConnect(); $("relayUrl").value = ""; $("relayCode").value = ""; };
 $("product").onchange = e => { S.product = e.target.value; restart(); };
 $("tf").onchange = e => { S.tf = +e.target.value; S.cb = []; S.ix = []; S.candles = S.src === "kalshi" ? S.ix : S.cb; S.v.off = S.v.offT = 0; hmReset(); rebuildIx(); loadCandles(); };
@@ -1208,7 +1290,8 @@ if ("serviceWorker" in navigator && location.protocol.startsWith("http")) naviga
 setInterval(indexTick, 500);
 setInterval(sigTick, 5000);
 setInterval(pullRelaySignals, 60000); setTimeout(pullRelaySignals, 3000);
-window.__walls = { S, IX, EX, SIG };   // handy for debugging in the browser console
+setInterval(() => loadResults(), 60000); setTimeout(() => loadResults(true), 2500);
+window.__walls = { S, IX, EX, SIG, RES };   // handy for debugging in the browser console
 setInterval(() => { if (S.last && viewBooks().length) recalc(); }, 80);
 setInterval(hmSample, 250);
 setInterval(updateHeader, 200);
