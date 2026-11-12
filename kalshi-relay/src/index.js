@@ -9,6 +9,12 @@ const BACKLOG_SEC = 20 * 60;         // history sent to an app when it connects
 
 export default {
   async fetch(req, env) {
+    try { return await route(req, env); }
+    catch (err) { return json({ error: "relay error: " + String(err && err.message || err) }, 500); }
+  },
+};
+async function route(req, env) {
+  {
     const url = new URL(req.url);
     const stub = env.RELAY.get(env.RELAY.idFromName("main"));
     if (url.pathname === "/ws") {
@@ -18,8 +24,8 @@ export default {
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
     if (["/status", "/vapid", "/subscribe", "/unsubscribe", "/signals", "/test-push", "/results"].includes(url.pathname)) return stub.fetch(req);
     return new Response("Kalshi relay is running. Connect the app to /ws.\n", { headers: { "content-type": "text/plain" } });
-  },
-};
+  }
+}
 
 export class Relay extends DurableObject {
   constructor(ctx, env) {
@@ -133,6 +139,10 @@ export class Relay extends DurableObject {
   }
 
   async fetch(req) {
+    try { return await this.handle(req); }
+    catch (err) { return json({ error: "relay error: " + String(err && err.stack || err).slice(0, 600) }, 500); }
+  }
+  async handle(req) {
     const url = new URL(req.url);
     await this.ensureUpstream();
     if (url.pathname === "/status") {
