@@ -284,12 +284,13 @@ async function loadCandles() {
 async function loadTradeCandles(gen, tf) {
   try {
     let url = `https://api.exchange.coinbase.com/products/${S.product}/trades?limit=1000`, trades = [];
-    for (let page = 0; page < 3; page++) {
+    for (let page = 0; page < 6; page++) {               // ~15–20 min of BTC trades
       const r = await fetch(url); if (!r.ok) break;
       const rows = await r.json(); if (!rows.length) break;
       trades.push(...rows);
-      const after = r.headers.get("cb-after"); if (!after) break;
-      url = `https://api.exchange.coinbase.com/products/${S.product}/trades?limit=1000&after=${after}`;
+      const oldest = Math.min(...rows.map(x => x.trade_id));   // page back by trade id
+      url = `https://api.exchange.coinbase.com/products/${S.product}/trades?limit=1000&after=${oldest}`;
+      if (gen !== S.gen || tf !== S.tf) return;
     }
     if (gen !== S.gen || tf !== S.tf || !trades.length) return;
     const m = new Map();
@@ -755,7 +756,8 @@ function onIndex(sec, v) {
   const t = bucketT(sec), arr = S.ix;
   let c = arr.at(-1);
   if (!c || t > c.t) {
-    c = { t, o: c && !c.hist ? c.c : v, h: v, l: v, c: v, v: 0 };
+    const o = c && !c.hist ? c.c : v;
+    c = { t, o, h: Math.max(o, v), l: Math.min(o, v), c: v, v: 0 };
     arr.push(c); if (arr.length > 600) arr.shift();
     if (S.src === "kalshi" && S.v.offT > 0) S.v.offT += 1, S.v.off += 1;
   } else if (t < c.t) return;
