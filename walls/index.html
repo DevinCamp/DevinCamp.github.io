@@ -63,6 +63,9 @@
   .dlg .primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
   #relayStatus.ok { color: var(--up); } #relayStatus.bad { color: var(--down); }
   .up { color: var(--up); } .down { color: var(--down); }
+  #refreshBtn { font-size: 17px; line-height: 1; padding: 5px 9px; flex: none; }
+  #refreshBtn.spin { animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   #gear { display: none; font-size: 17px; line-height: 1; padding: 6px 9px; }
   canvas.resize { cursor: ew-resize; }
   header { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 10px 14px;
@@ -142,6 +145,7 @@
   <div class="seg" id="srcSeg" title="Price source">
     <button data-src="coinbase" class="on">Coinbase</button><button data-src="kalshi">Kalshi</button>
   </div>
+  <button id="refreshBtn" aria-label="Refresh" title="Refresh: reconnect all feeds and load the latest app version">⟳</button>
   <button id="gear" aria-label="Settings">⚙︎</button>
   <div class="stat kal"><small>15-min target</small><span id="kTarget">—</span></div>
   <div class="stat kal"><small>Last 60s avg</small><span id="kAvg">—</span></div>
@@ -161,7 +165,7 @@
     </label>
     <label>Candles
       <select id="tf">
-        <option value="60">1m</option><option value="300">5m</option>
+        <option value="10">10s</option><option value="60">1m</option><option value="300">5m</option>
         <option value="900">15m</option><option value="3600">1h</option>
       </select>
     </label>
@@ -262,6 +266,7 @@ const ease = (cur, tgt, k) => cur + (tgt - cur) * k;
 // ======================= candles =======================
 async function loadCandles() {
   const gen = S.gen, tf = S.tf;
+  if (tf < 60) return loadTradeCandles(gen, tf);
   try {
     const r = await fetch(`https://api.exchange.coinbase.com/products/${S.product}/candles?granularity=${tf}`);
     if (!r.ok) throw new Error(r.status);
@@ -273,6 +278,38 @@ async function loadCandles() {
     if (!S.cbLast && S.cb.length) S.cbLast = S.cb.at(-1).c;
     if (S.src === "coinbase") { S.candles = S.cb; if (!S.last) S.last = S.cbLast; } else rebuildIx();
   } catch (e) { console.warn("candle history unavailable; building from live trades", e); }
+}
+// Sub-minute candles: Coinbase only offers 1-minute+ candle history, so build recent 10 s candles
+// from its latest trades (a few pages back), then keep them live from the trade feed.
+async function loadTradeCandles(gen, tf) {
+  try {
+    let url = `https://api.exchange.coinbase.com/products/${S.product}/trades?limit=1000`, trades = [];
+    for (let page = 0; page < 3; page++) {
+      const r = await fetch(url); if (!r.ok) break;
+      const rows = await r.json(); if (!rows.length) break;
+      trades.push(...rows);
+      const after = r.headers.get("cb-after"); if (!after) break;
+      url = `https://api.exchange.coinbase.com/products/${S.product}/trades?limit=1000&after=${after}`;
+    }
+    if (gen !== S.gen || tf !== S.tf || !trades.length) return;
+    const m = new Map();
+    for (const tr of trades.sort((a, b) => a.trade_id - b.trade_id)) {
+      const t = Math.floor(Date.parse(tr.time) / 1000 / tf) * tf, p = +tr.price, q = +tr.size;
+      let c = m.get(t); if (!c) m.set(t, c = { t, o: p, h: p, l: p, c: p, v: 0 });
+      c.h = Math.max(c.h, p); c.l = Math.min(c.l, p); c.c = p; c.v += q;
+    }
+    // fill quiet 10 s gaps so the chart has no holes
+    const keys = [...m.keys()].sort((a, b) => a - b), out = [];
+    for (let i = 0; i < keys.length; i++) {
+      const c = m.get(keys[i]);
+      if (out.length) for (let t = out.at(-1).t + tf; t < c.t; t += tf) { const pc = out.at(-1).c; out.push({ t, o: pc, h: pc, l: pc, c: pc, v: 0 }); }
+      out.push(c);
+    }
+    for (const c of S.cb) { const i = out.findIndex(x => x.t === c.t); if (i >= 0) out[i] = c; else if (c.t > (out.at(-1) || { t: 0 }).t) out.push(c); }
+    S.cb = out.slice(-600);
+    if (!S.cbLast && S.cb.length) S.cbLast = S.cb.at(-1).c;
+    if (S.src === "coinbase") { S.candles = S.cb; if (!S.last) S.last = S.cbLast; } else rebuildIx();
+  } catch (e) { console.warn("trade history unavailable; building 10s candles live", e); }
 }
 function onTrade(price, size, iso) {
   const t = bucketT(Date.parse(iso) / 1000);
@@ -969,11 +1006,11 @@ function frame(dt) {
     ctx.fillRect(x - cw / 2, chartB + VOL_H - h, cw, h);
   }
   ctx.fillStyle = "#7d8696"; ctx.font = "11px -apple-system, sans-serif"; ctx.textBaseline = "top"; ctx.textAlign = "center";
-  const every = Math.max(1, Math.ceil(80 / slot));
+  const every = Math.max(1, Math.ceil((S.tf < 60 ? 110 : 80) / slot));
   for (let i = iLast; i >= iFirst; i--) {
     if ((S.candles[i].t / S.tf) % every) continue;
     const d = new Date(S.candles[i].t * 1000);
-    ctx.fillText(d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }), xOfIdx(i), chartB + VOL_H + 5);
+    ctx.fillText(d.toLocaleTimeString([], S.tf < 60 ? { hour: "numeric", minute: "2-digit", second: "2-digit" } : { hour: "numeric", minute: "2-digit" }), xOfIdx(i), chartB + VOL_H + 5);
   }
   ctx.textAlign = "left"; ctx.restore();
 
@@ -1111,6 +1148,11 @@ function setSrc(src) {
   hmReset(); save();
 }
 for (const b of document.querySelectorAll("#srcSeg button")) b.onclick = () => setSrc(b.dataset.src);
+$("refreshBtn").onclick = async () => {
+  $("refreshBtn").classList.add("spin");
+  try { const reg = navigator.serviceWorker && await navigator.serviceWorker.getRegistration(); if (reg) await reg.update(); } catch {}
+  setTimeout(() => location.reload(), 250);
+};
 function openAlerts() {
   $("sigMarkers").checked = SIG.markers; $("sigSens").value = SIG.sens; $("sigNotify").checked = SIG.notify;
   pushStatusUI(); $("alertDlg").hidden = false; document.body.classList.remove("settings");
@@ -1200,7 +1242,9 @@ $("relayDlg").addEventListener("pointerdown", e => { if (e.target.id === "relayD
 $("relayForm").onsubmit = e => { e.preventDefault(); OFF.url = $("relayUrl").value.trim(); OFF.code = $("relayCode").value; saveRelay(); relayConnect(); loadResults(true); };
 $("relayOff").onclick = () => { OFF.url = ""; OFF.code = ""; saveRelay(); relayConnect(); $("relayUrl").value = ""; $("relayCode").value = ""; };
 $("product").onchange = e => { S.product = e.target.value; restart(); };
-$("tf").onchange = e => { S.tf = +e.target.value; S.cb = []; S.ix = []; S.candles = S.src === "kalshi" ? S.ix : S.cb; S.v.off = S.v.offT = 0; hmReset(); rebuildIx(); loadCandles(); };
+$("tf").onchange = e => { const was = S.tf; S.tf = +e.target.value;
+  if (S.tf < 60 && was >= 60) { S.v.rangeT = 0.0025; $("range").value = "0.0025"; }        // 10 s candles: zoom in on price
+  else if (S.tf >= 60 && was < 60) { S.v.rangeT = 0.01; $("range").value = "0.01"; } S.cb = []; S.ix = []; S.candles = S.src === "kalshi" ? S.ix : S.cb; S.v.off = S.v.offT = 0; hmReset(); rebuildIx(); loadCandles(); };
 $("range").onchange = e => { if (e.target.value) S.v.rangeT = +e.target.value; };
 $("sens").oninput = e => { S.sens = +e.target.value; $("sensv").textContent = S.sens + "×"; };
 $("heat").onchange = e => { S.heat = e.target.checked; };
@@ -1295,7 +1339,7 @@ window.__walls = { S, IX, EX, SIG, RES };   // handy for debugging in the browse
 setInterval(() => { if (S.last && viewBooks().length) recalc(); }, 80);
 setInterval(hmSample, 250);
 setInterval(updateHeader, 200);
-setInterval(() => { if (document.visibilityState === "visible") loadCandles(); }, 60000);
+setInterval(() => { if (document.visibilityState === "visible" && S.tf >= 60) loadCandles(); }, 60000);
 let prevTs = performance.now();
 (function loop(ts) {
   const dt = Math.min(100, ts - prevTs); prevTs = ts;
