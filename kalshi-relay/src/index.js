@@ -63,11 +63,17 @@ export class Relay extends DurableObject {
   async signalTick() {
     const subs = await this.getSubs();
     const coins = new Map();
-    for (const c of String(this.env.PRED_COINS || "BTC-USD").split(",").map(x => x.trim()).filter(Boolean)) coins.set(c, new Set());
+    const now = Math.floor(Date.now() / 1000), toClose = 900 - (now % 900);
+    // Keep book reads light (Coinbase rate-limits shared Cloudflare IPs): BTC + subscribed coins every tick,
+    // other tracked coins only in the ~2 minutes before each 15-min close, when their "read" is recorded.
+    const pred = String(this.env.PRED_COINS || "BTC-USD").split(",").map(x => x.trim()).filter(Boolean);
+    for (const c of pred) if (c === "BTC-USD" || toClose <= 120) coins.set(c, new Set());
     for (const r of subs.values()) { if (!coins.has(r.coin)) coins.set(r.coin, new Set()); coins.get(r.coin).add(r.sens); }
-    const now = Math.floor(Date.now() / 1000);
+    const errs = [];
     for (const [coin, senses] of coins) {
-      const bk = await fetchBook(coin); if (!bk) continue;
+      let bk = null;
+      try { bk = await fetchBook(coin); } catch (err) { errs.push(`${coin}: ${err.message}`); }
+      if (!bk) continue;
       const ratio = bookRatio(bk.bids, bk.asks, bk.mid, SIG_BAND); if (ratio == null) continue;
       await this.recordPrediction(coin, ratio, now, bk.mid);
       for (const sens of senses) {
@@ -94,6 +100,7 @@ export class Relay extends DurableObject {
         }
       }
     }
+    if (errs.length) throw new Error(errs.join("; "));
   }
   // The app's "prediction" for a 15-min window = which side the order book leaned to (smoothed, ±0.25%)
   // at the start of the window's final minute, i.e. right before Kalshi's settlement averaging begins.
@@ -288,14 +295,29 @@ function bookRatio(bids, asks, mid, band) {
   for (const [p, q] of asks) if (p <= hi && p >= mid) a += q;
   return b + a > 0 ? b / (b + a) : null;
 }
-// Coinbase order book near the price (public endpoint, no key)
+// Order book near the price: Coinbase public endpoint (same book the app uses); if Coinbase rate-limits
+// or fails, fall back to Kraken's public depth so alerts and reads keep running.
+const KRAKEN_PAIR = { "BTC-USD": "XBTUSD", "ETH-USD": "ETHUSD", "SOL-USD": "SOLUSD", "XRP-USD": "XRPUSD", "DOGE-USD": "XDGUSD" };
+const cbBackoff = { until: 0 };
 export async function fetchBook(coin) {
-  const r = await fetch(`https://api.coinbase.com/api/v3/brokerage/market/product_book?product_id=${encodeURIComponent(coin)}&limit=1000`, { headers: { "user-agent": "kalshi-relay" } });
-  if (!r.ok) throw new Error(`Coinbase book HTTP ${r.status}`);
-  const j = await r.json(), pb = j.pricebook || j;
-  const bids = (pb.bids || []).map(l => [+l.price, +l.size]), asks = (pb.asks || []).map(l => [+l.price, +l.size]);
+  if (Date.now() >= cbBackoff.until) {
+    try {
+      const r = await fetch(`https://api.coinbase.com/api/v3/brokerage/market/product_book?product_id=${encodeURIComponent(coin)}&limit=1000`, { headers: { "user-agent": "kalshi-relay" } });
+      if (r.status === 429) cbBackoff.until = Date.now() + 120000;               // rest Coinbase for 2 min
+      if (!r.ok) throw new Error(`Coinbase book HTTP ${r.status}`);
+      const j = await r.json(), pb = j.pricebook || j;
+      const bids = (pb.bids || []).map(l => [+l.price, +l.size]), asks = (pb.asks || []).map(l => [+l.price, +l.size]);
+      if (bids.length && asks.length) return { bids, asks, mid: (bids[0][0] + asks[0][0]) / 2, src: "coinbase" };
+    } catch (err) { if (!KRAKEN_PAIR[coin]) throw err; }
+  }
+  const pair = KRAKEN_PAIR[coin]; if (!pair) throw new Error("no book source for " + coin);
+  const r = await fetch(`https://api.kraken.com/0/public/Depth?pair=${pair}&count=500`);
+  if (!r.ok) throw new Error(`Kraken depth HTTP ${r.status}`);
+  const j = await r.json(); if (j.error && j.error.length) throw new Error("Kraken: " + j.error.join(","));
+  const book = Object.values(j.result || {})[0]; if (!book) return null;
+  const bids = book.bids.map(l => [+l[0], +l[1]]), asks = book.asks.map(l => [+l[0], +l[1]]);
   if (!bids.length || !asks.length) return null;
-  return { bids, asks, mid: (bids[0][0] + asks[0][0]) / 2 };
+  return { bids, asks, mid: (bids[0][0] + asks[0][0]) / 2, src: "kraken" };
 }
 function fmtUsd(x) { return "$" + x.toLocaleString("en-US", { minimumFractionDigits: x < 10 ? 4 : 2, maximumFractionDigits: x < 10 ? 4 : 2 }); }
 async function sha(s) { return b64u(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s))).slice(0, 22); }

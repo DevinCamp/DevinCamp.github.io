@@ -43,6 +43,7 @@ One Durable Object ("main"):
 - iPhone: push only works for the Home Screen web app (iOS 16.4+), and permission has to be requested from a tap.
 - Electron (`file://`) has no service worker or push; in-app notifications there use `new Notification()`.
 - Coinbase Exchange `/trades` paging: the `CB-AFTER` header isn't exposed to browsers, so page with `after=<oldest trade_id>`.
+- Coinbase rate-limits the relay's book reads (HTTP 429; Cloudflare IPs are shared). `fetchBook` backs off 2 min and falls back to Kraken's public depth. BTC is read every tick; other coins only near 15-min closes or when someone is subscribed to them. Keep the per-tick request count low.
 - Windows `.exe` icon: set with `resedit` (pure JS), since `--icon` would need wine.
 
 ## Testing before you push
