@@ -1,0 +1,8 @@
+{
+  "name": "live-walls-chart",
+  "productName": "Live Walls Chart",
+  "version": "1.1.0",
+  "description": "Live Coinbase candles with order-book buy and sell walls",
+  "main": "main.js",
+  "author": "Devin"
+}
