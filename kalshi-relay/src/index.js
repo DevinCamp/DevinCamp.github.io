@@ -100,7 +100,38 @@ export class Relay extends DurableObject {
         }
       }
     }
+    for (const c of pred) { try { await this.checkpoints(c, now); } catch (err) { errs.push(`checkpoint ${c}: ${err.message}`); } }
     if (errs.length) throw new Error(errs.join("; "));
+  }
+  // Earlier reads at 5, 3, 2 and 1 minute before each close, with Kalshi's own Yes price at the same moment, so the
+  // model can be judged against the market and at horizons where the answer isn't already obvious.
+  async checkpoints(coin, now) {
+    const close = Math.ceil((now + 1) / 900) * 900, left = close - now;
+    const T = [300, 180, 120, 60].find(t => left <= t && left > t - 20);
+    if (!T) return;
+    if (!this.cpDone) this.cpDone = new Set();
+    const key = `${coin}:${close}:${T}`; if (this.cpDone.has(key)) return;
+    this.cpDone.add(key); if (this.cpDone.size > 200) this.cpDone = new Set([...this.cpDone].slice(-100));
+    const ps = this.predState && this.predState.get("pred:" + coin);
+    const book = !!(ps && ps.ema != null && ps.at && now - ps.at < 60);
+    const sm = settleModel(this.hist.get(IDX_OF[coin]) || [], close, now, book ? (ps.ema - 0.5) * 2 : 0);
+    if (!sm) return;
+    let yes = null; try { yes = await this.kalshiYes(coin, close); } catch {}
+    const k = "cp:" + coin, hist = (await this.ctx.storage.get(k)) || [];
+    hist.push({ close, t: T, p: +sm.p.toFixed(3), pc: +sm.pc.toFixed(3), yes, book });
+    await this.ctx.storage.put(k, hist.filter(x => x.close > now - 7 * 86400).slice(-1600));
+  }
+  async kalshiYes(coin, close) {
+    const series = SERIES[coin]; if (!series) return null;
+    if (!this.yesCache) this.yesCache = new Map();
+    let c = this.yesCache.get(series);
+    if (!c || Date.now() - c.at > 10000) {
+      const r = await fetch(`https://api.elections.kalshi.com/trade-api/v2/markets?series_ticker=${series}&status=open&limit=10`, { headers: { accept: "application/json" } });
+      if (!r.ok) throw new Error(`Kalshi open markets HTTP ${r.status}`);
+      c = { at: Date.now(), markets: (await r.json()).markets || [] }; this.yesCache.set(series, c);
+    }
+    const m = c.markets.find(x => Math.round(Date.parse(x.close_time) / 1000) === close);
+    return m ? yesFromMarket(m) : null;
   }
   // The app's "prediction" for a 15-min window = which side the order book leaned to (smoothed, ±0.25%)
   // at the start of the window's final minute, i.e. right before Kalshi's settlement averaging begins.
@@ -108,7 +139,7 @@ export class Relay extends DurableObject {
     const k = "pred:" + coin; let st = this.predState && this.predState.get(k);
     if (!this.predState) this.predState = new Map();
     if (!st) this.predState.set(k, st = { ema: null });
-    st.ema = st.ema == null ? ratio : st.ema + 0.4 * (ratio - st.ema);
+    st.ema = st.ema == null ? ratio : st.ema + 0.4 * (ratio - st.ema); st.at = now;
     const close = Math.ceil((now + 1) / 900) * 900, left = close - now;
     if (left > 75 || left < 45 || st.saved === close) return;           // first tick inside the last ~minute's start
     st.saved = close;
@@ -133,6 +164,7 @@ export class Relay extends DurableObject {
       c = { at: now, markets: j.markets || [] }; this.resCache.set(series, c);
     }
     const preds = new Map(((await this.ctx.storage.get("pred:" + coin)) || []).map(p => [p.close, p]));
+    const cps = new Map(); for (const x of ((await this.ctx.storage.get("cp:" + coin)) || [])) { if (!cps.has(x.close)) cps.set(x.close, []); cps.get(x.close).push({ t: x.t, p: x.p, pc: x.pc, yes: x.yes }); }
     const rows = c.markets.map(m => {
       const close = Math.round(Date.parse(m.close_time) / 1000);
       const target = num(m.floor_strike), final = num(m.expiration_value);
@@ -140,7 +172,7 @@ export class Relay extends DurableObject {
       const outcome = res === "yes" ? "up" : res === "no" ? "down" : null;
       const p = preds.get(close);
       return { close, ticker: m.ticker, target, final, outcome, volume: num(m.volume ?? m.volume_fp),
-        pred: p ? { dir: p.dir, buyPct: p.buyPct, ...(p.m ? { p: p.m.p, pc: p.m.pc } : {}) } : null, hit: p && outcome ? p.dir === outcome : null,
+        cps: cps.get(close) || [], pred: p ? { dir: p.dir, buyPct: p.buyPct, ...(p.m ? { p: p.m.p, pc: p.m.pc } : {}) } : null, hit: p && outcome ? p.dir === outcome : null,
         hitM: p && p.m && outcome ? (p.m.p >= 0.5 ? "up" : "down") === outcome : null, hitC: p && p.m && outcome ? (p.m.pc >= 0.5 ? "up" : "down") === outcome : null };
     }).filter(r => r.close && r.outcome).sort((a, b) => b.close - a.close).slice(0, limit);
     return { coin, series, rows, trackedSince: preds.size ? Math.min(...preds.keys()) : null };
@@ -316,6 +348,13 @@ function settleModel(pts, close, now, lean) {
   return { target, idx: last, sd, z, p: normCdf(z), pc: normCdf(z + 0.5 * lean) };   // pc adds the book lean (-1..1) as up to ±0.5 sd
 }
 // --- end settle model
+// Kalshi's Yes price (0..1) from a market object: mid of bid/ask, else last trade. Handles dollar or cent fields.
+function yesFromMarket(m) {
+  const px = (d, c) => d != null && num(d) != null ? num(d) : c != null && num(c) != null ? num(c) / 100 : null;
+  const bid = px(m.yes_bid_dollars, m.yes_bid), ask = px(m.yes_ask_dollars, m.yes_ask), last = px(m.last_price_dollars, m.last_price);
+  const y = bid != null && ask != null && ask > 0 ? (bid + ask) / 2 : last;
+  return y == null ? null : +y.toFixed(3);
+}
 const IDX_OF = { "BTC-USD": "BRTI", "ETH-USD": "ETHUSD_RTI", "SOL-USD": "SOLUSD_RTI", "XRP-USD": "XRPUSD_RTI", "DOGE-USD": "DOGEUSD_RTI" };
 const SIG_LEVELS = { low: [0.70, 0.30], med: [0.64, 0.36], high: [0.58, 0.42] };
 const SIG_BAND = 0.0025, SIG_COOLDOWN = 300;
@@ -331,6 +370,7 @@ function bookRatio(bids, asks, mid, band) {
 // or fails, fall back to Kraken's public depth so alerts and reads keep running.
 const KRAKEN_PAIR = { "BTC-USD": "XBTUSD", "ETH-USD": "ETHUSD", "SOL-USD": "SOLUSD", "XRP-USD": "XRPUSD", "DOGE-USD": "XDGUSD" };
 const cbBackoff = { until: 0 };
+export { yesFromMarket };
 export async function fetchBook(coin) {
   if (Date.now() >= cbBackoff.until) {
     try {
