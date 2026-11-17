@@ -13,8 +13,8 @@
 <title>Live Candles + Order Book Walls</title>
 <style>
   :root {
-    --bg: #0b0e13; --panel: #11151c; --line: #1f2530; --text: #d6dbe4; --muted: #7d8696;
-    --up: #22c38e; --down: #f0506e; --accent: #5b8cff;
+    --bg: #0a0d12; --panel: #0e1218; --line: #1a2029; --text: #dde2ea; --muted: #7b8493;
+    --up: #27c68f; --down: #f0617b; --accent: #5b8cff; --card: #131820; --gold: #f2c057;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); overflow: hidden;
@@ -99,12 +99,43 @@
   canvas { touch-action: none; }
   header { padding-top: max(10px, env(safe-area-inset-top)); padding-left: max(14px, env(safe-area-inset-left)); padding-right: max(14px, env(safe-area-inset-right)); }
   #walls { padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+  /* ---------- calmer look ---------- */
+  header { gap: 12px 22px; padding: 12px 18px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  .stats { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; }
+  .kcard { display: flex; align-items: center; gap: 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 7px 4px; }
+  .kcard .stat { padding: 0 16px; }
+  .kcard .stat + .stat { border-left: 1px solid var(--line); }
+  .kcard .stat span { font-size: 14px; font-weight: 600; }
+  .kcard .stat.odds span { font-size: 18px; font-weight: 700; letter-spacing: -.01em; }
+  .stat small { color: var(--muted); font-size: 10.5px; font-weight: 500; letter-spacing: .02em; margin-bottom: 1px; }
+  #kTarget { color: var(--gold); }
+  .price { font-size: 26px; font-weight: 650; letter-spacing: -.02em; }
+  #title { font-weight: 650; letter-spacing: .01em; }
+  .badge { background: #1a202a; font-weight: 600; letter-spacing: .06em; }
+  select, button { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px 11px; color: var(--text); transition: background .15s, border-color .15s; }
+  button:hover, select:hover { background: #18202a; border-color: #2a3442; }
+  .seg { border: 1px solid var(--line); border-radius: 10px; padding: 2px; background: var(--card); gap: 2px; }
+  .seg button { background: transparent; border: 0; border-radius: 8px; padding: 5px 13px; }
+  .seg button:hover { background: #18202a; }
+  .seg button.on { background: #222c3d; color: #fff; }
+  .seg button[data-src="kalshi"].on { background: #34290f; color: var(--gold); }
+  .controls { gap: 8px 16px; padding-top: 10px; border-top: 1px solid var(--line); flex: 1 1 100%; margin-left: 0; }
+  .controls label { color: var(--muted); font-size: 12px; }
+  .controls button { color: var(--muted); }
+  .controls button:hover { color: var(--text); }
+  #refreshBtn { border-radius: 10px; }
+  .meter { height: 5px; border-radius: 3px; width: 110px; }
+  #walls { padding: 9px 18px; background: var(--panel); border-top: 1px solid var(--line); }
+  .dlg { background: #121720; border-color: #232b37; border-radius: 16px; }
+  #resTable th { background: #151b24; }
   /* ---------- phones (portrait or landscape) ---------- */
   @media (max-width: 700px), (max-height: 500px) {
     header { position: relative; flex-wrap: nowrap; gap: 12px; padding: 6px 10px;
       padding-top: max(6px, env(safe-area-inset-top)); overflow-x: auto; scrollbar-width: none; }
     header::-webkit-scrollbar { display: none; }
     header > * { flex: none; }
+    .stats { flex-wrap: nowrap; gap: 12px; }
+    .kcard { flex: none; }
     .price { font-size: 18px; min-width: 0; }
     .stat small { font-size: 10px; }
     .stat { font-size: 12px; }
@@ -125,6 +156,23 @@
     #walls::-webkit-scrollbar { display: none; }
     #walls .w { flex: none; }
     #help { display: none; }
+  }
+  /* portrait phone: header wraps into clear rows (landscape keeps the single scrolling strip) */
+  @media (max-width: 700px) and (min-height: 501px) {
+    header { flex-wrap: wrap; overflow: visible; gap: 8px 10px; padding: 8px 12px; padding-top: max(8px, env(safe-area-inset-top)); }
+    header > .kcard { order: 5; flex: 1 1 100%; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px 0; padding: 8px 0; }
+    .kcard .stat { padding: 0 12px; min-width: 0; }
+    .kcard .stat span { font-size: 13px; white-space: nowrap; }
+    .kcard .stat.odds span { font-size: 17px; }
+    .kcard .stat:nth-child(4) { grid-column: 1 / 3; border-left: 0; border-top: 1px solid var(--line); padding-top: 8px; }
+    .kcard .stat.res { grid-column: 3; border-top: 1px solid var(--line); padding-top: 8px; }
+    .seg button { padding: 5px 9px; }
+    #gear { padding: 6px 8px; }
+    .stats { order: 6; flex: 1 1 100%; flex-wrap: nowrap; overflow-x: auto; gap: 18px; scrollbar-width: none; }
+    .stats::-webkit-scrollbar { display: none; }
+    .stats > * { flex: none; }
+    .price { font-size: 21px; }
+    header { gap: 8px 8px; }
   }
   /* phone on its side: give the chart all the height */
   @media (max-height: 500px) {
@@ -147,16 +195,20 @@
   </div>
   <button id="refreshBtn" aria-label="Refresh" title="Refresh: reconnect all feeds and load the latest app version">⟳</button>
   <button id="gear" aria-label="Settings">⚙︎</button>
-  <div class="stat kal"><small>15-min target</small><span id="kTarget">—</span></div>
-  <div class="stat kal"><small>Last 60s avg</small><span id="kAvg">—</span></div>
-  <div class="stat kal"><small>Settle odds</small><span id="kOdds" title="Chance the final-60s average ends above the target: distance to target, time left and volatility, plus the order-book lean">—</span></div>
-  <div class="stat kal"><small id="kCdLbl">15-min closes in</small><span id="kCd">—</span></div>
-  <button class="stat res" id="resStrip" type="button" title="Past 15-minute results"><small>Last 15-min results</small><span id="resDots" class="dots">—</span></button>
-  <div class="stat cbo"><small>Kalshi index</small><span id="ixVal">—</span></div>
-  <div class="stat cbo"><small>Spread</small><span id="spread">—</span></div>
-  <div class="stat"><small>Buyers in view</small><span id="bidTot" style="color:var(--up)">—</span></div>
-  <div class="stat"><small>Sellers in view</small><span id="askTot" style="color:var(--down)">—</span></div>
-  <div class="stat"><small id="press">Pressure</small><div class="meter"><div id="meter" style="width:50%"></div></div></div>
+  <div class="kcard kal">
+    <div class="stat"><small>15-min target</small><span id="kTarget">—</span></div>
+    <div class="stat"><small>Last 60s avg</small><span id="kAvg">—</span></div>
+    <div class="stat odds"><small>Settle odds</small><span id="kOdds" title="Chance the final-60s average ends above the target: distance to target, time left and volatility, plus the order-book lean">—</span></div>
+    <div class="stat"><small id="kCdLbl">15-min closes in</small><span id="kCd">—</span></div>
+    <button class="stat res" id="resStrip" type="button" title="Past 15-minute results"><small>Last 15-min results</small><span id="resDots" class="dots">—</span></button>
+  </div>
+  <div class="stats">
+    <div class="stat cbo"><small>Kalshi index</small><span id="ixVal">—</span></div>
+    <div class="stat cbo"><small>Spread</small><span id="spread">—</span></div>
+    <div class="stat"><small>Buyers in view</small><span id="bidTot" style="color:var(--up)">—</span></div>
+    <div class="stat"><small>Sellers in view</small><span id="askTot" style="color:var(--down)">—</span></div>
+    <div class="stat"><small id="press">Pressure</small><div class="meter"><div id="meter" style="width:50%"></div></div></div>
+  </div>
   <div class="controls">
     <label>Market
       <select id="product">
@@ -985,10 +1037,10 @@ function frame(dt) {
     if (!seen.has(key) && fx.a < 0.02) S.wallFx.delete(key);
   }
   const wallsSorted = [...S.wallFx.values()];
-  ctx.setLineDash([6, 5]); ctx.lineWidth = 1.5;
+  ctx.setLineDash([5, 6]); ctx.lineWidth = 1;
   for (const fx of wallsSorted) {
     const yy = Math.round(y(fx.p)) + 0.5, sell = fx.w.side === "sell";
-    ctx.strokeStyle = sell ? `rgba(240,80,110,${0.85 * fx.a})` : `rgba(34,195,142,${0.85 * fx.a})`;
+    ctx.strokeStyle = sell ? `rgba(240,97,123,${0.7 * fx.a})` : `rgba(39,198,143,${0.7 * fx.a})`;
     ctx.beginPath(); ctx.moveTo(0, yy); ctx.lineTo(chartR, yy); ctx.stroke();
   }
   ctx.setLineDash([]);
@@ -997,7 +1049,7 @@ function frame(dt) {
   for (let i = iFirst; i <= iLast; i++) {
     let c = S.candles[i];
     if (i === n - 1) c = { ...c, c: v.last, h: Math.max(c.h, v.last), l: Math.min(c.l, v.last) };
-    const x = xOfIdx(i), up = c.c >= c.o, col = up ? "#22c38e" : "#f0506e";
+    const x = xOfIdx(i), up = c.c >= c.o, col = up ? "#27c68f" : "#f0617b";
     ctx.globalAlpha = c.hist ? 0.35 : 1;
     ctx.fillStyle = col;
     ctx.fillRect(x - 0.5, y(c.h), 1, Math.max(1, y(c.l) - y(c.h)));
