@@ -114,7 +114,11 @@ export class Relay extends DurableObject {
     st.saved = close;
     const hist = (await this.ctx.storage.get(k)) || [];
     if (hist.some(x => x.close === close)) return;
-    hist.push({ close, buyPct: Math.round(st.ema * 100), dir: st.ema >= 0.5 ? "up" : "down", price: mid });
+    const e = { close, buyPct: Math.round(st.ema * 100), dir: st.ema >= 0.5 ? "up" : "down", price: mid };
+    // settlement-aware read: distance to the target, time left and volatility, plus the book lean (p = without book, pc = with)
+    const sm = settleModel(this.hist.get(IDX_OF[coin]) || [], close, now, (st.ema - 0.5) * 2);
+    if (sm) e.m = { target: +sm.target.toPrecision(9), idx: +sm.idx.toPrecision(9), sd: +sm.sd.toPrecision(4), p: +sm.p.toFixed(3), pc: +sm.pc.toFixed(3) };
+    hist.push(e);
     await this.ctx.storage.put(k, hist.filter(x => x.close > now - 7 * 86400).slice(-800));
   }
   async results(coin, limit) {
@@ -136,7 +140,8 @@ export class Relay extends DurableObject {
       const outcome = res === "yes" ? "up" : res === "no" ? "down" : null;
       const p = preds.get(close);
       return { close, ticker: m.ticker, target, final, outcome, volume: num(m.volume ?? m.volume_fp),
-        pred: p ? { dir: p.dir, buyPct: p.buyPct } : null, hit: p && outcome ? p.dir === outcome : null };
+        pred: p ? { dir: p.dir, buyPct: p.buyPct, ...(p.m ? { p: p.m.p, pc: p.m.pc } : {}) } : null, hit: p && outcome ? p.dir === outcome : null,
+        hitM: p && p.m && outcome ? (p.m.p >= 0.5 ? "up" : "down") === outcome : null, hitC: p && p.m && outcome ? (p.m.pc >= 0.5 ? "up" : "down") === outcome : null };
     }).filter(r => r.close && r.outcome).sort((a, b) => b.close - a.close).slice(0, limit);
     return { coin, series, rows, trackedSince: preds.size ? Math.min(...preds.keys()) : null };
   }
@@ -285,6 +290,33 @@ export class Relay extends DurableObject {
   }
 }
 
+// --- settle model (shared with walls/index.html; keep identical; test/settle.test.mjs checks they match)
+// Odds that the final-60s average of the index ends above the 15-min target. pts = ascending [sec, value].
+function normCdf(z) {
+  const t = 1 / (1 + 0.2316419 * Math.abs(z)), d = 0.3989423 * Math.exp(-z * z / 2);
+  const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+  return z > 0 ? 1 - p : p;
+}
+function settleModel(pts, close, now, lean) {
+  const open = close - 900, n = pts.length;
+  if (n < 120 || now - pts[n - 1][0] > 10 || now >= close) return null;
+  let ts = 0, tn = 0, os = 0, on = 0, s2 = 0, sn = 0;
+  for (let i = 0; i < n; i++) {
+    const t = pts[i][0], v = pts[i][1];
+    if (t >= open - 60 && t < open) { ts += v; tn++; }
+    if (t >= close - 60 && t <= now) { os += v; on++; }
+    if (i && t >= now - 600) { const dt = t - pts[i - 1][0]; if (dt > 0 && dt <= 5) { const d = (v - pts[i - 1][1]) / Math.sqrt(dt); s2 += d * d; sn++; } }
+  }
+  if (tn < 50 || sn < 60) return null;
+  const target = ts / tn, sig = Math.sqrt(s2 / sn), last = pts[n - 1][1];
+  const L = close - now, r = Math.min(L, 60), a = Math.max(0, L - 60);
+  const mean = (os + r * last) / (on + r);
+  const sd = Math.max(1e-9, sig * (r / (on + r)) * Math.sqrt(a + r / 3));
+  const z = (mean - target) / sd;
+  return { target, idx: last, sd, z, p: normCdf(z), pc: normCdf(z + 0.5 * lean) };   // pc adds the book lean (-1..1) as up to ±0.5 sd
+}
+// --- end settle model
+const IDX_OF = { "BTC-USD": "BRTI", "ETH-USD": "ETHUSD_RTI", "SOL-USD": "SOLUSD_RTI", "XRP-USD": "XRPUSD_RTI", "DOGE-USD": "DOGEUSD_RTI" };
 const SIG_LEVELS = { low: [0.70, 0.30], med: [0.64, 0.36], high: [0.58, 0.42] };
 const SIG_BAND = 0.0025, SIG_COOLDOWN = 300;
 const SERIES = { "BTC-USD": "KXBTC15M", "ETH-USD": "KXETH15M", "SOL-USD": "KXSOL15M", "XRP-USD": "KXXRP15M", "DOGE-USD": "KXDOGE15M" };

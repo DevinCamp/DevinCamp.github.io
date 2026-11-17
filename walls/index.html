@@ -149,6 +149,7 @@
   <button id="gear" aria-label="Settings">⚙︎</button>
   <div class="stat kal"><small>15-min target</small><span id="kTarget">—</span></div>
   <div class="stat kal"><small>Last 60s avg</small><span id="kAvg">—</span></div>
+  <div class="stat kal"><small>Settle odds</small><span id="kOdds" title="Chance the final-60s average ends above the target: distance to target, time left and volatility, plus the order-book lean">—</span></div>
   <div class="stat kal"><small id="kCdLbl">15-min closes in</small><span id="kCd">—</span></div>
   <button class="stat res" id="resStrip" type="button" title="Past 15-minute results"><small>Last 15-min results</small><span id="resDots" class="dots">—</span></button>
   <div class="stat cbo"><small>Kalshi index</small><span id="ixVal">—</span></div>
@@ -193,7 +194,7 @@
     <div class="row" style="align-items:center"><h3 id="resTitle">Past 15-minute results</h3><span style="flex:1"></span><button type="button" id="resClose">Close</button></div>
     <div id="resSummary" class="hint"></div>
     <div class="tbl"><table id="resTable"><thead><tr><th>Window closed</th><th>Target</th><th>Final</th><th>Move</th><th>Result</th><th>App's read*</th><th></th></tr></thead><tbody></tbody></table></div>
-    <p class="hint" style="font-size:11px">Results are Kalshi's settled 15-minute Up/Down markets (final 60-second average of the CF Benchmarks index vs. the target). *App's read = which side the order book leaned to (±0.25%, smoothed) one minute before the close, recorded by your relay; it starts from when the relay began tracking. Past results don't guarantee future ones.</p>
+    <p class="hint" style="font-size:11px">Results are Kalshi's settled 15-minute Up/Down markets (final 60-second average of the CF Benchmarks index vs. the target). *App's read = recorded by your relay one minute before the close: the chance the final-60s average ends above the target (distance to target, time left, volatility, plus the order-book lean). Older rows show the order-book lean only (±0.25%, smoothed). Past results don't guarantee future ones.</p>
   </div>
 </div>
 <div id="alertDlg" class="modal" hidden>
@@ -658,11 +659,17 @@ function renderResults() {
   const tb = $("resTable").tBodies[0];
   if (RES.err) { $("resSummary").textContent = RES.err; tb.innerHTML = ""; return; }
   const n = RES.rows.length, ups = RES.rows.filter(r => r.outcome === "up").length;
-  const graded = RES.rows.filter(r => r.hit != null), hits = graded.filter(r => r.hit).length;
+  const gradedB = RES.rows.filter(r => r.hit != null), gradedM = RES.rows.filter(r => r.hitC != null);
+  const pct = (a, b) => b ? `<b>${a} of ${b}</b> (${Math.round(a / b * 100)}%)` : "n/a";
+  const hitsB = gradedB.filter(r => r.hit).length, hitsM = gradedM.filter(r => r.hitM).length, hitsC = gradedM.filter(r => r.hitC).length;
+  const hitsBm = gradedM.filter(r => r.hit).length;          // book-only, over the same windows the settle model covers
   let streak = 0; for (const r of RES.rows) { if (r.outcome === RES.rows[0].outcome) streak++; else break; }
-  const g24 = graded.slice(0, 24), h24 = g24.filter(r => r.hit).length;
+  // by confidence of the settle-aware read (distance from 50/50)
+  const bucket = (lo, hi) => { const g = gradedM.filter(r => { const c = Math.abs(r.pred.pc - 0.5) * 2; return c >= lo && c < hi; }); return g.length ? `${g.filter(r => r.hitC).length}/${g.length}` : "–"; };
   $("resSummary").innerHTML = n ? `Last ${n} windows: <b class="up">${ups} UP</b> · <b class="down">${n - ups} DOWN</b> · current streak ${streak} ${RES.rows[0].outcome.toUpperCase()}` +
-    (graded.length ? `<br>App's read was right <b>${hits} of ${graded.length}</b> (${Math.round(hits / graded.length * 100)}%)` + (graded.length > 24 ? ` · last 24: ${h24}/24 (${Math.round(h24 / 24 * 100)}%)` : "") : "<br>App's read: the relay records it from now on; check back after a few windows.")
+    (gradedM.length ? `<br>Settle-aware read right ${pct(hitsC, gradedM.length)} · distance/time/volatility only ${pct(hitsM, gradedM.length)} · order book only ${pct(hitsBm, gradedM.length)}` +
+      `<br>By confidence of the settle-aware read: under 30% ${bucket(0, 0.3)} · 30–60% ${bucket(0.3, 0.6)} · over 60% ${bucket(0.6, 1.01)}`
+      : gradedB.length ? `<br>Order-book read was right ${pct(hitsB, gradedB.length)} <span class="hint">(settle-aware read starts recording once your relay updates)</span>` : "<br>App's read: the relay records it from now on; check back after a few windows.")
     : "No settled windows found yet.";
   const tf = new Intl.DateTimeFormat([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   tb.innerHTML = RES.rows.map(r => {
@@ -670,8 +677,8 @@ function renderResults() {
     return `<tr><td>${tf.format(new Date(r.close * 1000))}</td><td>${r.target != null ? fmtP(r.target) : "—"}</td><td>${r.final != null ? fmtP(r.final) : "—"}</td>` +
       `<td class="${mv >= 0 ? "up" : "down"}">${mv != null ? (mv >= 0 ? "+" : "") + fmtP(mv) : "—"}</td>` +
       `<td><span class="pill ${r.outcome}">${r.outcome === "up" ? "▲ UP" : "▼ DOWN"}</span></td>` +
-      `<td>${r.pred ? `<span class="${r.pred.dir}">${r.pred.dir === "up" ? "▲" : "▼"} ${r.pred.dir === "up" ? r.pred.buyPct : 100 - r.pred.buyPct}%</span>` : '<span class="hint">—</span>'}</td>` +
-      `<td>${r.hit == null ? "" : r.hit ? '<span class="up">✓</span>' : '<span class="down">✗</span>'}</td></tr>`;
+      `<td>${r.pred ? (r.hitC != null ? `<span class="${r.pred.pc >= 0.5 ? "up" : "down"}">${r.pred.pc >= 0.5 ? "▲" : "▼"} ${Math.round((r.pred.pc >= 0.5 ? r.pred.pc : 1 - r.pred.pc) * 100)}%</span>` : `<span class="${r.pred.dir}">${r.pred.dir === "up" ? "▲" : "▼"} ${r.pred.dir === "up" ? r.pred.buyPct : 100 - r.pred.buyPct}%</span>`) : '<span class="hint">—</span>'}</td>` +
+      `<td>${(r.hitC != null ? r.hitC : r.hit) == null ? "" : (r.hitC != null ? r.hitC : r.hit) ? '<span class="up">✓</span>' : '<span class="down">✗</span>'}</td></tr>`;
   }).join("");
 }
 function openResults() { $("resDlg").hidden = false; document.body.classList.remove("settings"); renderResults(); loadResults(true); }
@@ -784,6 +791,32 @@ function avgSec(from, to) {                   // mean of per-second values with 
   for (let i = IX.sec.length - 1; i >= 0; i--) { const x = IX.sec[i]; if (x.t < from) break; if (x.t < to) { s += x.v; n++; } }
   return n ? { v: s / n, n } : null;
 }
+// --- settle model (shared with walls/index.html; keep identical; test/settle.test.mjs checks they match)
+// Odds that the final-60s average of the index ends above the 15-min target. pts = ascending [sec, value].
+function normCdf(z) {
+  const t = 1 / (1 + 0.2316419 * Math.abs(z)), d = 0.3989423 * Math.exp(-z * z / 2);
+  const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+  return z > 0 ? 1 - p : p;
+}
+function settleModel(pts, close, now, lean) {
+  const open = close - 900, n = pts.length;
+  if (n < 120 || now - pts[n - 1][0] > 10 || now >= close) return null;
+  let ts = 0, tn = 0, os = 0, on = 0, s2 = 0, sn = 0;
+  for (let i = 0; i < n; i++) {
+    const t = pts[i][0], v = pts[i][1];
+    if (t >= open - 60 && t < open) { ts += v; tn++; }
+    if (t >= close - 60 && t <= now) { os += v; on++; }
+    if (i && t >= now - 600) { const dt = t - pts[i - 1][0]; if (dt > 0 && dt <= 5) { const d = (v - pts[i - 1][1]) / Math.sqrt(dt); s2 += d * d; sn++; } }
+  }
+  if (tn < 50 || sn < 60) return null;
+  const target = ts / tn, sig = Math.sqrt(s2 / sn), last = pts[n - 1][1];
+  const L = close - now, r = Math.min(L, 60), a = Math.max(0, L - 60);
+  const mean = (os + r * last) / (on + r);
+  const sd = Math.max(1e-9, sig * (r / (on + r)) * Math.sqrt(a + r / 3));
+  const z = (mean - target) / sd;
+  return { target, idx: last, sd, z, p: normCdf(z), pc: normCdf(z + 0.5 * lean) };   // pc adds the book lean (-1..1) as up to ±0.5 sd
+}
+// --- end settle model
 function kalshiWindows() {
   const now = Date.now() / 1000;
   const open15 = Math.floor(now / 900) * 900, close15 = open15 + 900, closeH = Math.floor(now / 3600) * 3600 + 3600;
@@ -1105,6 +1138,12 @@ function updateHeader() {
       const diff = kw.target ? kw.live60 - kw.target : null;
       av.innerHTML = fmtP(kw.live60) + (diff != null ? ` <span class="${diff >= 0 ? "up" : "down"}">${diff >= 0 ? "▲ +" : "▼ "}${fmtP(diff)}</span>` : "");
     } else av.textContent = "—";
+    const od = $("kOdds"), sec = Math.floor(kw.now);
+    if (od._s !== sec) {
+      od._s = sec;
+      const sm = IX.sec.length > 120 ? settleModel(IX.sec.slice(-1000).map(x => [x.t, x.v]), kw.close15, kw.now, ((SIG.ema != null ? SIG.ema : 0.5) - 0.5) * 2) : null;
+      od.innerHTML = sm ? (sm.pc >= 0.5 ? `<span class="up">▲ ${Math.round(sm.pc * 100)}%</span>` : `<span class="down">▼ ${Math.round((1 - sm.pc) * 100)}%</span>`) : "—";
+    }
     const left15 = kw.close15 - kw.now, leftH = kw.closeH - kw.now;
     $("kCd").textContent = `${mmss(left15)}  ·  1h ${mmss(leftH)}`;
     $("kCdLbl").textContent = "15-min · hourly close in";
