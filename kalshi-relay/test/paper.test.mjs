@@ -17,3 +17,22 @@ const stop = paperSim([bet(1e9, "down"), bet(1e9 + 900, "down"), bet(1e9 + 1800,
 assert.equal(stop.bets, 2, "daily 20% loss stop: after 2 losses at 20% the day is over");   // 1000 -> 800 -> 640 (<= 800 floor)
 assert.equal(yesFromMarket({ yes_bid: 40, yes_ask: 44 }), 0.42);
 console.log("paper tests passed");
+
+// Relay plumbing with fake storage and a mocked Kalshi: record a bet for both variants, settle it, report it.
+const { Relay } = await import(f);
+const mem = new Map();
+const relay = Object.create(Relay.prototype);
+relay.ctx = { storage: { get: async k => mem.get(k), put: async (k, v) => { mem.set(k, JSON.parse(JSON.stringify(v))); } } };
+const close = Math.floor(Date.now() / 1000) - 600;                          // a window that closed 10 min ago
+const quote = { yes: 0.56, bid: 0.55, ask: 0.57 };
+await relay.paperBet("", close, 180, 0.85, quote);
+await relay.paperBet("", close, 120, 0.85, quote);                           // same window: ignored
+await relay.paperBet(":nb", close, 180, 0.50, { yes: 0.50, bid: 0.49, ask: 0.51 });   // no edge: no bet
+assert.equal(mem.get("paper:BTC-USD").length, 1); assert.equal(mem.get("paper:BTC-USD:nb"), undefined);
+globalThis.fetch = async () => new Response(JSON.stringify({ markets: [{ close_time: new Date(close * 1000).toISOString(), result: "yes" }] }));
+let rep = await relay.paperReport();
+assert.equal(rep.open, 0); const s10 = rep.sims.find(x => x.variant === "book" && x.cap === 0.1);
+assert.equal(s10.bets, 1); assert.equal(s10.wins, 1); assert(s10.ret > 0.05 && s10.ret < 0.11);
+assert.equal(rep.sims.find(x => x.variant === "nobook" && x.cap === 0.1).bets, 0);
+assert.equal(rep.last[0].won, true);
+console.log("paper plumbing tests passed");

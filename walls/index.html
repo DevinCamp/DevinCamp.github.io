@@ -724,10 +724,18 @@ function cpTable() {
 function paperHtml() {
   if (S.product !== "BTC-USD") return "";
   const P = RES.paper; if (!P) return "";
-  const m = x => (x * 100 >= 0 ? "+" : "") + (x * 100).toFixed(1) + "%";
-  const lines = (P.sims || []).map(x => x.bets ? `${Math.round(x.cap * 100)}% max stake: <b>${x.bets}</b> bets, won ${x.wins} (${Math.round(x.wins / x.bets * 100)}%), <b class="${x.ret >= 0 ? "up" : "down"}">${m(x.ret)}</b>, worst drop −${(x.maxDD * 100).toFixed(1)}%` : `${Math.round(x.cap * 100)}% max stake: no settled bets yet`);
-  return `<div style="margin-top:10px"><b style="color:var(--text)">Paper trading · BTC · no real money</b><br>${lines.join("<br>")}` +
-    (P.open ? `<br>${P.open} bet${P.open > 1 ? "s" : ""} waiting to settle` : "") +
+  const m = x => (x >= 0 ? "+" : "") + (x * 100).toFixed(1) + "%";
+  const st = P.stats || { cps: 0, quotes: 0, twoSided: 0 };
+  const line = x => x.bets ? `${Math.round(x.cap * 100)}% max stake: <b>${x.bets}</b> bets, won ${x.wins} (${Math.round(x.wins / x.bets * 100)}%), <b class="${x.ret >= 0 ? "up" : "down"}">${m(x.ret)}</b>, worst drop −${(x.maxDD * 100).toFixed(1)}%` : `${Math.round(x.cap * 100)}% max stake: no settled bets yet`;
+  const grp = (v, label) => `<div>${label}</div>` + (P.sims || []).filter(x => x.variant === v).map(x => `<div style="padding-left:10px">${line(x)}</div>`).join("");
+  let diag = "";
+  if (!st.cps) diag = "No checkpoints recorded yet. The relay needs about 16 minutes of index history after each update.";
+  else if (!st.quotes) diag = `<b class="down">${st.cps} checkpoints, none had a Kalshi price.</b> The relay can't read the market quote; paper trading can't run until that's fixed.`;
+  else if (!st.twoSided) diag = `<b class="down">${st.quotes} Kalshi prices, but none with both a bid and an ask.</b> Paper bets need both.`;
+  else diag = `${st.cps} checkpoints checked · ${st.twoSided} had a full Kalshi quote${(P.sims || []).every(x => !x.bets) ? " · no edge big enough to bet yet" : ""}`;
+  return `<div style="margin-top:10px"><b style="color:var(--text)">Paper trading · BTC · no real money</b>` +
+    grp("book", "Model + order-book lean") + grp("nobook", "Model only (no book)") +
+    (P.open ? `<div>${P.open} bet${P.open > 1 ? "s" : ""} waiting to settle</div>` : "") + `<div style="margin-top:4px">${diag}</div>` +
     `<div style="font-size:11px">If the model followed its own odds: bets only when its edge over Kalshi's price beats the fee, at the ask, half-Kelly stake capped at the % shown, one bet per window, stops for the day after losing 20%. Fills at the quoted price are assumed, so real results would be somewhat worse.</div></div>`;
 }
 function renderResults() {

@@ -121,7 +121,12 @@ export class Relay extends DurableObject {
     const yes = q ? q.yes : null;
     const k = "cp:" + coin, hist = (await this.ctx.storage.get(k)) || [];
     hist.push({ close, t: T, p: +sm.p.toFixed(3), pc: +sm.pc.toFixed(3), yes, book });
-    if (coin === "BTC-USD" && q) await this.paperBet(close, T, sm.pc, q);
+    if (coin === "BTC-USD") {
+      const st = (await this.ctx.storage.get("paperstat")) || { cps: 0, quotes: 0, twoSided: 0 };
+      st.cps++; if (q) st.quotes++; if (q && q.bid != null && q.ask != null) st.twoSided++; st.at = Math.floor(now);
+      await this.ctx.storage.put("paperstat", st);
+      if (q) { await this.paperBet("", close, T, sm.pc, q); await this.paperBet(":nb", close, T, sm.p, q); }   // with and without the book lean
+    }
     await this.ctx.storage.put(k, hist.filter(x => x.close > now - 7 * 86400).slice(-1600));
   }
   async kalshiYes(coin, close) {
@@ -137,26 +142,31 @@ export class Relay extends DurableObject {
     return m ? quoteFromMarket(m) : null;
   }
   // ---- paper trading (BTC only, no real money): what a bot following the model would have done, with Kalshi fees.
-  async paperBet(close, T, q, quote) {
+  async paperBet(variant, close, T, q, quote) {
     const d = paperDecide(q, quote.bid, quote.ask);
     if (!d) return;
-    const k = "paper:BTC-USD", bets = (await this.ctx.storage.get(k)) || [];
+    const k = "paper:BTC-USD" + variant, bets = (await this.ctx.storage.get(k)) || [];
     if (bets.some(b => b.close === close)) return;                       // at most one bet per window: the first checkpoint with an edge
     bets.push({ close, t: T, ...d, out: null });
     await this.ctx.storage.put(k, bets.filter(b => b.close > Date.now() / 1000 - 14 * 86400).slice(-1500));
   }
   async paperSettle() {
-    const k = "paper:BTC-USD", bets = (await this.ctx.storage.get(k)) || [], now = Date.now() / 1000;
-    if (!bets.some(b => !b.out && b.close < now - 20)) return;
-    const done = new Map(); for (const m of await this.settled("KXBTC15M", 100)) { const res = String(m.result || "").toLowerCase(); if (res === "yes" || res === "no") done.set(Math.round(Date.parse(m.close_time) / 1000), res === "yes" ? "up" : "down"); }
-    let ch = false; for (const b of bets) if (!b.out && done.has(b.close)) { b.out = done.get(b.close); ch = true; }
-    if (ch) await this.ctx.storage.put(k, bets);
+    const now = Date.now() / 1000; let done = null;
+    for (const v of ["", ":nb"]) {
+      const k = "paper:BTC-USD" + v, bets = (await this.ctx.storage.get(k)) || [];
+      if (!bets.some(b => !b.out && b.close < now - 20)) continue;
+      if (!done) { done = new Map(); for (const m of await this.settled("KXBTC15M", 100)) { const res = String(m.result || "").toLowerCase(); if (res === "yes" || res === "no") done.set(Math.round(Date.parse(m.close_time) / 1000), res === "yes" ? "up" : "down"); } }
+      let ch = false; for (const b of bets) if (!b.out && done.has(b.close)) { b.out = done.get(b.close); ch = true; }
+      if (ch) await this.ctx.storage.put(k, bets);
+    }
   }
   async paperReport() {
     try { await this.paperSettle(); } catch {}
-    const bets = (await this.ctx.storage.get("paper:BTC-USD")) || [];
-    const open = bets.filter(b => !b.out).length, settled = bets.filter(b => b.out);
-    return { since: bets.length ? Math.min(...bets.map(b => b.close)) : null, open, sims: [0.10, 0.20].map(cap => paperSim(bets, cap)),
+    const withBook = (await this.ctx.storage.get("paper:BTC-USD")) || [], noBook = (await this.ctx.storage.get("paper:BTC-USD:nb")) || [];
+    const settled = withBook.filter(b => b.out);
+    return { stats: (await this.ctx.storage.get("paperstat")) || { cps: 0, quotes: 0, twoSided: 0 },
+      open: withBook.filter(b => !b.out).length,
+      sims: [["book", withBook], ["nobook", noBook]].flatMap(([variant, bets]) => [0.10, 0.20].map(cap => ({ variant, ...paperSim(bets, cap) }))),
       last: settled.sort((a, b) => b.close - a.close).slice(0, 12).map(b => ({ close: b.close, t: b.t, side: b.side, price: b.price, q: b.q, edge: b.edge, won: (b.side === "yes") === (b.out === "up") })) };
   }
   async settled(series, limit) {
