@@ -38,8 +38,8 @@
   #pushStatus.ok { color: var(--up); } #pushStatus.bad { color: var(--down); }
   #resDlg { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 16px; }
   #resDlg[hidden] { display: none; }
-  .dlg.wide { width: min(760px, 100%); max-height: 88vh; }
-  .tbl { overflow: auto; border: 1px solid #2a3240; border-radius: 10px; flex: 1; min-height: 120px; }
+  .dlg.wide { width: min(760px, 100%); max-height: 88vh; overflow-y: auto; }
+  .tbl { overflow: auto; border: 1px solid #2a3240; border-radius: 10px; flex: none; max-height: 42vh; min-height: 120px; }
   #resTable { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
   #resTable th { position: sticky; top: 0; background: #1a202a; color: var(--muted); font-weight: 600; text-align: right; padding: 8px 10px; font-size: 11px; white-space: nowrap; }
   #resTable td { padding: 7px 10px; border-top: 1px solid #1f2530; text-align: right; white-space: nowrap; }
@@ -249,6 +249,7 @@
   <div class="dlg wide">
     <div class="row" style="align-items:center"><h3 id="resTitle">Past 15-minute results</h3><span style="flex:1"></span><button type="button" id="resClose">Close</button></div>
     <div id="resSummary" class="hint"></div>
+    <div id="paperBox" class="hint"></div>
     <div class="tbl"><table id="resTable"><thead><tr><th>Window closed</th><th>Target</th><th>Final</th><th>Move</th><th>Result</th><th>App's read*</th><th></th></tr></thead><tbody></tbody></table></div>
     <p class="hint" style="font-size:11px">Results are Kalshi's settled 15-minute Up/Down markets (final 60-second average of the CF Benchmarks index vs. the target). *App's read = recorded by your relay one minute before the close (earlier checkpoints are in the table above): the chance the final-60s average ends above the target (distance to target, time left, volatility, plus the order-book lean). Older rows show the order-book lean only (±0.25%, smoothed). Past results don't guarantee future ones.</p>
   </div>
@@ -702,6 +703,8 @@ async function loadResults(force) {
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || "relay error " + r.status);
     RES.coin = S.product; RES.rows = j.rows || []; RES.since = j.trackedSince; RES.at = Date.now(); RES.err = "";
+    RES.paper = null;
+    if (S.product === "BTC-USD") { try { const pr = await fetch(`${relayBase()}/paper`, { headers: { authorization: "Bearer " + OFF.code } }); if (pr.ok) RES.paper = await pr.json(); } catch {} }
   } catch (err) { RES.err = /404|Not Found/.test(err.message) ? "Your relay needs the latest update (it updates automatically from GitHub)." : "Couldn't load results: " + err.message; }
   renderResults();
 }
@@ -718,6 +721,15 @@ function cpTable() {
   return `<table class="cpt"><thead><tr><th>Before close</th><th>Windows</th><th>Model</th><th>+ book</th><th>Kalshi price</th><th>Error: + book</th><th>Error: Kalshi</th></tr></thead><tbody>${rows.join("")}</tbody></table>` +
     `<div class="hint" style="font-size:11px">Accuracy = how often each read picked the winning side. Error = average squared miss (lower is better, 0.25 = coin flip). If the model's error isn't below Kalshi's, it has no edge over the market.</div>`;
 }
+function paperHtml() {
+  if (S.product !== "BTC-USD") return "";
+  const P = RES.paper; if (!P) return "";
+  const m = x => (x * 100 >= 0 ? "+" : "") + (x * 100).toFixed(1) + "%";
+  const lines = (P.sims || []).map(x => x.bets ? `${Math.round(x.cap * 100)}% max stake: <b>${x.bets}</b> bets, won ${x.wins} (${Math.round(x.wins / x.bets * 100)}%), <b class="${x.ret >= 0 ? "up" : "down"}">${m(x.ret)}</b>, worst drop −${(x.maxDD * 100).toFixed(1)}%` : `${Math.round(x.cap * 100)}% max stake: no settled bets yet`);
+  return `<div style="margin-top:10px"><b style="color:var(--text)">Paper trading · BTC · no real money</b><br>${lines.join("<br>")}` +
+    (P.open ? `<br>${P.open} bet${P.open > 1 ? "s" : ""} waiting to settle` : "") +
+    `<div style="font-size:11px">If the model followed its own odds: bets only when its edge over Kalshi's price beats the fee, at the ask, half-Kelly stake capped at the % shown, one bet per window, stops for the day after losing 20%. Fills at the quoted price are assumed, so real results would be somewhat worse.</div></div>`;
+}
 function renderResults() {
   const dots = $("resDots");
   const last = RES.rows.slice(0, 8).reverse();
@@ -725,6 +737,7 @@ function renderResults() {
   dots.title = RES.err || "";
   if ($("resDlg").hidden) return;
   $("resTitle").textContent = `Past 15-minute results · ${base()}`;
+  $("paperBox").innerHTML = RES.err ? "" : paperHtml();
   const tb = $("resTable").tBodies[0];
   if (RES.err) { $("resSummary").textContent = RES.err; tb.innerHTML = ""; return; }
   const n = RES.rows.length, ups = RES.rows.filter(r => r.outcome === "up").length;

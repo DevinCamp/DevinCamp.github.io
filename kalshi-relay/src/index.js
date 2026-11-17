@@ -22,7 +22,7 @@ async function route(req, env) {
       return stub.fetch(req);
     }
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
-    if (["/status", "/vapid", "/subscribe", "/unsubscribe", "/signals", "/test-push", "/results"].includes(url.pathname)) return stub.fetch(req);
+    if (["/status", "/vapid", "/subscribe", "/unsubscribe", "/signals", "/test-push", "/results", "/paper"].includes(url.pathname)) return stub.fetch(req);
     return new Response("Kalshi relay is running. Connect the app to /ws.\n", { headers: { "content-type": "text/plain" } });
   }
 }
@@ -101,6 +101,7 @@ export class Relay extends DurableObject {
       }
     }
     for (const c of pred) { try { await this.checkpoints(c, now); } catch (err) { errs.push(`checkpoint ${c}: ${err.message}`); } }
+    try { await this.paperSettle(); } catch (err) { errs.push("paper settle: " + err.message); }
     if (errs.length) throw new Error(errs.join("; "));
   }
   // Earlier reads at 5, 3, 2 and 1 minute before each close, with Kalshi's own Yes price at the same moment, so the
@@ -116,9 +117,11 @@ export class Relay extends DurableObject {
     const book = !!(ps && ps.ema != null && ps.at && now - ps.at < 60);
     const sm = settleModel(this.hist.get(IDX_OF[coin]) || [], close, now, book ? (ps.ema - 0.5) * 2 : 0);
     if (!sm) return;
-    let yes = null; try { yes = await this.kalshiYes(coin, close); } catch {}
+    let q = null; try { q = await this.kalshiYes(coin, close); } catch {}
+    const yes = q ? q.yes : null;
     const k = "cp:" + coin, hist = (await this.ctx.storage.get(k)) || [];
     hist.push({ close, t: T, p: +sm.p.toFixed(3), pc: +sm.pc.toFixed(3), yes, book });
+    if (coin === "BTC-USD" && q) await this.paperBet(close, T, sm.pc, q);
     await this.ctx.storage.put(k, hist.filter(x => x.close > now - 7 * 86400).slice(-1600));
   }
   async kalshiYes(coin, close) {
@@ -131,7 +134,40 @@ export class Relay extends DurableObject {
       c = { at: Date.now(), markets: (await r.json()).markets || [] }; this.yesCache.set(series, c);
     }
     const m = c.markets.find(x => Math.round(Date.parse(x.close_time) / 1000) === close);
-    return m ? yesFromMarket(m) : null;
+    return m ? quoteFromMarket(m) : null;
+  }
+  // ---- paper trading (BTC only, no real money): what a bot following the model would have done, with Kalshi fees.
+  async paperBet(close, T, q, quote) {
+    const d = paperDecide(q, quote.bid, quote.ask);
+    if (!d) return;
+    const k = "paper:BTC-USD", bets = (await this.ctx.storage.get(k)) || [];
+    if (bets.some(b => b.close === close)) return;                       // at most one bet per window: the first checkpoint with an edge
+    bets.push({ close, t: T, ...d, out: null });
+    await this.ctx.storage.put(k, bets.filter(b => b.close > Date.now() / 1000 - 14 * 86400).slice(-1500));
+  }
+  async paperSettle() {
+    const k = "paper:BTC-USD", bets = (await this.ctx.storage.get(k)) || [], now = Date.now() / 1000;
+    if (!bets.some(b => !b.out && b.close < now - 20)) return;
+    const done = new Map(); for (const m of await this.settled("KXBTC15M", 100)) { const res = String(m.result || "").toLowerCase(); if (res === "yes" || res === "no") done.set(Math.round(Date.parse(m.close_time) / 1000), res === "yes" ? "up" : "down"); }
+    let ch = false; for (const b of bets) if (!b.out && done.has(b.close)) { b.out = done.get(b.close); ch = true; }
+    if (ch) await this.ctx.storage.put(k, bets);
+  }
+  async paperReport() {
+    try { await this.paperSettle(); } catch {}
+    const bets = (await this.ctx.storage.get("paper:BTC-USD")) || [];
+    const open = bets.filter(b => !b.out).length, settled = bets.filter(b => b.out);
+    return { since: bets.length ? Math.min(...bets.map(b => b.close)) : null, open, sims: [0.10, 0.20].map(cap => paperSim(bets, cap)),
+      last: settled.sort((a, b) => b.close - a.close).slice(0, 12).map(b => ({ close: b.close, t: b.t, side: b.side, price: b.price, q: b.q, edge: b.edge, won: (b.side === "yes") === (b.out === "up") })) };
+  }
+  async settled(series, limit) {
+    if (!this.resCache) this.resCache = new Map();
+    let c = this.resCache.get(series);
+    if (!c || Date.now() - c.at > 60000) {
+      const r = await fetch(`https://api.elections.kalshi.com/trade-api/v2/markets?series_ticker=${series}&status=settled&limit=${Math.max(limit, 100)}`, { headers: { accept: "application/json" } });
+      if (!r.ok) throw new Error(`Kalshi markets HTTP ${r.status}`);
+      c = { at: Date.now(), markets: (await r.json()).markets || [] }; this.resCache.set(series, c);
+    }
+    return c.markets;
   }
   // The app's "prediction" for a 15-min window = which side the order book leaned to (smoothed, ±0.25%)
   // at the start of the window's final minute, i.e. right before Kalshi's settlement averaging begins.
@@ -197,9 +233,10 @@ export class Relay extends DurableObject {
         pushDevices: subs.size, signals: this.sigErr ? { error: this.sigErr } : Object.fromEntries([...this.sigState].map(([k, v]) => [k, v.ema != null ? Math.round(v.ema * 100) + "% buyers" : "–"])) });
     }
     if (url.pathname === "/vapid") return json({ key: (await this.vapid()).pub });
-    if (url.pathname === "/subscribe" || url.pathname === "/unsubscribe" || url.pathname === "/signals" || url.pathname === "/test-push" || url.pathname === "/results") {
+    if (url.pathname === "/subscribe" || url.pathname === "/unsubscribe" || url.pathname === "/signals" || url.pathname === "/test-push" || url.pathname === "/results" || url.pathname === "/paper") {
       const auth = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
       if (!this.env.RELAY_CODE || auth !== this.env.RELAY_CODE) return json({ error: "wrong access code" }, 403);
+      if (url.pathname === "/paper") return json(await this.paperReport());
       if (url.pathname === "/results") {
         const coin = url.searchParams.get("coin") || "BTC-USD";
         try { return json(await this.results(coin, Math.min(200, +url.searchParams.get("limit") || 96))); }
@@ -349,11 +386,39 @@ function settleModel(pts, close, now, lean) {
 }
 // --- end settle model
 // Kalshi's Yes price (0..1) from a market object: mid of bid/ask, else last trade. Handles dollar or cent fields.
-function yesFromMarket(m) {
+function quoteFromMarket(m) {
   const px = (d, c) => d != null && num(d) != null ? num(d) : c != null && num(c) != null ? num(c) / 100 : null;
   const bid = px(m.yes_bid_dollars, m.yes_bid), ask = px(m.yes_ask_dollars, m.yes_ask), last = px(m.last_price_dollars, m.last_price);
   const y = bid != null && ask != null && ask > 0 ? (bid + ask) / 2 : last;
-  return y == null ? null : +y.toFixed(3);
+  return y == null ? null : { yes: +y.toFixed(3), bid: bid != null && ask > 0 ? bid : null, ask: ask != null && ask > 0 ? ask : null };
+}
+function yesFromMarket(m) { const q = quoteFromMarket(m); return q ? q.yes : null; }
+// ---- paper trading maths. Fee per contract ~ 0.07 * P * (1 - P) (Kalshi's taker fee; check the current schedule).
+const PAPER_MIN_EDGE = 0.03;
+const kalshiFee = p => 0.07 * p * (1 - p);
+// q = our chance of Yes. Buy whichever side has the bigger edge after fee at the quoted ask; skip if the edge is small.
+function paperDecide(q, bid, ask) {
+  if (bid == null || ask == null || !(ask > 0) || !(bid >= 0) || bid > ask) return null;
+  const yesP = ask, noP = 1 - bid;
+  const y = { side: "yes", price: yesP, fee: kalshiFee(yesP), q }, n = { side: "no", price: noP, fee: kalshiFee(noP), q: 1 - q };
+  for (const o of [y, n]) { o.cost = o.price + o.fee; o.edge = o.q - o.cost; }
+  const b = y.edge >= n.edge ? y : n;
+  if (!(b.edge >= PAPER_MIN_EDGE) || b.cost >= 1) return null;
+  return { side: b.side, price: +b.price.toFixed(3), fee: +b.fee.toFixed(4), q: +b.q.toFixed(3), edge: +b.edge.toFixed(3), kelly: +(b.edge / (1 - b.cost) / 2).toFixed(4) };   // half Kelly
+}
+// Replay settled paper bets with a stake of min(cap, half Kelly) of equity; stop for the UTC day after losing dayStop.
+function paperSim(bets, cap, start = 1000, dayStop = 0.2) {
+  let eq = start, peak = start, maxDD = 0, wins = 0, n = 0, dayKey = null, dayStart = start;
+  for (const b of bets.filter(x => x.out).sort((a, c) => a.close - c.close)) {
+    const day = new Date(b.close * 1000).toISOString().slice(0, 10);
+    if (day !== dayKey) { dayKey = day; dayStart = eq; }
+    if (eq < dayStart * (1 - dayStop)) continue;
+    const f = Math.min(cap, b.kelly); if (!(f > 0)) continue;
+    const cost = b.price + b.fee, stake = eq * f, won = (b.side === "yes") === (b.out === "up");
+    eq += won ? stake / cost * (1 - cost) : -stake; n++; if (won) wins++;
+    peak = Math.max(peak, eq); maxDD = Math.max(maxDD, 1 - eq / peak);
+  }
+  return { cap, bets: n, wins, equity: +eq.toFixed(2), ret: +(eq / start - 1).toFixed(4), maxDD: +maxDD.toFixed(4) };
 }
 const IDX_OF = { "BTC-USD": "BRTI", "ETH-USD": "ETHUSD_RTI", "SOL-USD": "SOLUSD_RTI", "XRP-USD": "XRPUSD_RTI", "DOGE-USD": "DOGEUSD_RTI" };
 const SIG_LEVELS = { low: [0.70, 0.30], med: [0.64, 0.36], high: [0.58, 0.42] };
@@ -370,7 +435,7 @@ function bookRatio(bids, asks, mid, band) {
 // or fails, fall back to Kraken's public depth so alerts and reads keep running.
 const KRAKEN_PAIR = { "BTC-USD": "XBTUSD", "ETH-USD": "ETHUSD", "SOL-USD": "SOLUSD", "XRP-USD": "XRPUSD", "DOGE-USD": "XDGUSD" };
 const cbBackoff = { until: 0 };
-export { yesFromMarket };
+export { yesFromMarket, paperDecide, paperSim };
 export async function fetchBook(coin) {
   if (Date.now() >= cbBackoff.until) {
     try {
