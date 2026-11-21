@@ -735,6 +735,8 @@ function paperHtml() {
   };
   const names = { t300: "5 min before", t180: "3 min before", t120: "2 min before", t60: "1 min before", "p<30": "paid under 30¢", "p30-70": "paid 30–70¢", "p>70": "paid over 70¢" };
   const bd = (P.breakdown || []).map(r => `<tr><td>${names[r.key] || r.key}</td><td>${r.bets}</td><td>${Math.round(r.wins / r.bets * 100)}%</td><td class="${r.pnl >= 0 ? "up" : "down"}">${usd(r.pnl)}</td></tr>`).join("");
+  const days = P.daily || [], best = days.length ? Math.max(...days.map(d => d.pnl)) : 0, worst = days.length ? Math.min(...days.map(d => d.pnl)) : 0;
+  const dd = days.slice(0, 14).map(d => `<tr><td>${d.day.slice(5)}${days.length > 1 && d.pnl === best ? " ★ best" : days.length > 1 && d.pnl === worst ? " ▼ worst" : ""}</td><td>${d.bets}</td><td>${Math.round(d.wins / d.bets * 100)}%</td><td class="${d.pnl >= 0 ? "up" : "down"}">${usd(d.pnl)}</td></tr>`).join("");
   let diag;
   if (!st.cps) diag = "No checkpoints recorded yet. The relay needs about 16 minutes of index history after each update.";
   else if (!st.quotes) diag = `<b class="down">${st.cps} checkpoints, none had a Kalshi price.</b> The relay can't read the market quote.`;
@@ -745,6 +747,8 @@ function paperHtml() {
   return `<div style="margin-top:10px"><b style="color:var(--text)">Paper trading · BTC · no real money · model only</b>` +
     (P.sims || []).map(one).join("") + `<div style="margin-top:4px">${diag}</div>` +
     (bd ? `<table class="cpt"><thead><tr><th>Where the P&amp;L comes from</th><th>Bets</th><th>Won</th><th>$${A.flat} flat P&amp;L</th></tr></thead><tbody>${bd}</tbody></table>` : "") +
+    (dd ? `<table class="cpt"><thead><tr><th>Day (UTC)</th><th>Bets</th><th>Won</th><th>$${A.flat} flat P&amp;L</th></tr></thead><tbody>${dd}</tbody></table>` +
+      (days.length > 1 ? `<div style="font-size:11px">Best day ${usd(best)}, worst day ${usd(worst)}.</div>` : "") : "") +
     `<div style="font-size:11px">Strict rules: bets only when the model's edge over Kalshi's price, after the fee and ${Math.round(A.slip * 100)}¢ of slippage, is at least ${Math.round(A.minEdge * 100)} points. Buys at the ask plus ${Math.round(A.slip * 100)}¢, limited to the quantity shown at that price. One bet per window. Compounding runs use half-Kelly capped at the %, and stop for the day after losing 20%.</div></div>`;
 }
 function renderResults() {

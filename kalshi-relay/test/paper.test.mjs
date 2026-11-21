@@ -2,7 +2,7 @@
 import fs from "fs"; import os from "os"; import path from "path"; import assert from "assert";
 const src = fs.readFileSync(new URL("../src/index.js", import.meta.url), "utf8").replace(/^import .*$/m, "class DurableObject {}");
 const f = path.join(os.tmpdir(), "relay_mod_paper.mjs"); fs.writeFileSync(f, src);
-const { paperDecide, paperSim, paperBreakdown, yesFromMarket, Relay } = await import(f);
+const { paperDecide, paperSim, paperBreakdown, paperDaily, yesFromMarket, Relay } = await import(f);
 
 // ---- decision
 assert.equal(paperDecide(0.5, 0.49, 0.51), null, "no edge, no bet");
@@ -58,3 +58,12 @@ const cp = mem2.get("cp:BTC-USD"); assert(cp && cp.length === 1 && cp[0].t === 1
 const st = mem2.get("paperstat2"); assert.deepEqual([st.cps, st.quotes, st.twoSided, st.sized], [1, 1, 1, 1]);
 const pb = mem2.get("paper2:BTC-USD"); assert(pb && pb.length === 1 && pb[0].side === "yes" && pb[0].depth === 80, "model far above target vs a 56c Yes price: buys Yes");
 console.log("paper tests passed");
+
+// ---- daily P&L: grouped by UTC day, newest first, unsettled ignored
+const D = 86400, d0 = Math.floor(Date.UTC(2026, 10, 18) / 1000);
+const dly = paperDaily([bet(d0 + 3600, "up"), bet(d0 + 7200, "down"), bet(d0 + D + 100, "up"), bet(d0 + D + 200, null)]);
+assert.deepEqual(dly.map(x => x.day), ["2026-11-19", "2026-11-18"]);
+assert.equal(dly[0].bets, 1); assert(dly[0].pnl > 0);
+assert.equal(dly[1].bets, 2); assert.equal(dly[1].wins, 1);
+assert(Math.abs(dly[1].pnl - (25 / 0.5175 * (1 - 0.5175) - 25)) < 0.02);
+console.log("paper daily tests passed");

@@ -161,7 +161,7 @@ export class Relay extends DurableObject {
     try { await this.paperSettle(); } catch {}
     const bets = (await this.ctx.storage.get("paper2:BTC-USD")) || [];
     return { stats: (await this.ctx.storage.get("paperstat2")) || { cps: 0, quotes: 0, twoSided: 0, sized: 0 }, open: bets.filter(b => !b.out).length, settled: bets.filter(b => b.out).length,
-      sims: [{ flat: PAPER_FLAT }, { cap: 0.10 }, { cap: 0.20 }].map(o => paperSim(bets, o)), breakdown: paperBreakdown(bets),
+      sims: [{ flat: PAPER_FLAT }, { cap: 0.10 }, { cap: 0.20 }].map(o => paperSim(bets, o)), breakdown: paperBreakdown(bets), daily: paperDaily(bets).slice(0, 30),
       assumed: { slip: PAPER_SLIP, depth: PAPER_DEPTH, minEdge: PAPER_MIN_EDGE, flat: PAPER_FLAT } };
   }
   async settled(series, limit) {
@@ -435,6 +435,16 @@ function paperSim(bets, opts, start = 1000, dayStop = 0.2) {
   }
   return { ...opts, bets: n, wins, equity: +eq.toFixed(2), pnl: +(eq - start).toFixed(2), ret: +(eq / start - 1).toFixed(4), roi: spent ? +((eq - start) / spent).toFixed(4) : 0, maxDD: +maxDD.toFixed(4) };
 }
+// Flat-stake P&L per UTC day (newest first), so one lucky day can't hide behind a total.
+function paperDaily(bets) {
+  const days = new Map();
+  for (const b of bets.filter(x => x.out)) {
+    const r = paperFill(b, PAPER_FLAT); if (!(r.contracts > 0)) continue;
+    const day = new Date(b.close * 1000).toISOString().slice(0, 10), o = days.get(day) || { day, bets: 0, wins: 0, pnl: 0 };
+    o.bets++; if (r.won) o.wins++; o.pnl = +(o.pnl + r.pnl).toFixed(2); days.set(day, o);
+  }
+  return [...days.values()].sort((a, c) => a.day < c.day ? 1 : -1);
+}
 // Where the money comes from: flat-stake P&L by checkpoint and by price paid.
 function paperBreakdown(bets) {
   const rows = new Map(), add = (k, b) => { const r = paperFill(b, PAPER_FLAT); if (!(r.contracts > 0)) return; const o = rows.get(k) || { key: k, bets: 0, wins: 0, pnl: 0 }; o.bets++; if (r.won) o.wins++; o.pnl = +(o.pnl + r.pnl).toFixed(2); rows.set(k, o); };
@@ -456,7 +466,7 @@ function bookRatio(bids, asks, mid, band) {
 // or fails, fall back to Kraken's public depth so alerts and reads keep running.
 const KRAKEN_PAIR = { "BTC-USD": "XBTUSD", "ETH-USD": "ETHUSD", "SOL-USD": "SOLUSD", "XRP-USD": "XRPUSD", "DOGE-USD": "XDGUSD" };
 const cbBackoff = { until: 0 };
-export { yesFromMarket, paperDecide, paperSim, paperBreakdown };
+export { yesFromMarket, paperDecide, paperSim, paperBreakdown, paperDaily };
 export async function fetchBook(coin) {
   if (Date.now() >= cbBackoff.until) {
     try {
