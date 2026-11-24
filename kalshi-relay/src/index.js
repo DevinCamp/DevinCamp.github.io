@@ -135,7 +135,8 @@ export class Relay extends DurableObject {
     try { bq = await this.kalshiBook("BTC-USD", close); } catch (e) { err = String(e.message || e); }
     if (!bq || bq.bid == null || bq.ask == null) { st.bookFail++; if (err) st.lastErr = err.slice(0, 160); await this.ctx.storage.put("paperstat3", st); return; }
     st.book++; if (bq.bidSize != null && bq.askSize != null) st.sized++;
-    if (listQ && listQ.yes != null) { const d = Math.abs(listQ.yes - bq.yes); st.diffN++; st.diffSum = +(st.diffSum + d).toFixed(4); if (d > 0.05) st.diff5++; }
+    if (listQ && listQ.yes != null) { const d = Math.abs(listQ.yes - bq.yes); st.diffN++; st.diffSum = +(st.diffSum + d).toFixed(4); if (d > 0.05) st.diff5++;
+      st.lastCmp = { at: Math.floor(Date.now() / 1000), t: T, list: [listQ.bid, listQ.ask], book: [bq.bid, bq.ask], bookSize: [bq.bidSize, bq.askSize] }; }
     const pts = this.hist.get("BRTI") || [], ixAge = pts.length ? Date.now() / 1000 - pts[pts.length - 1][0] : 1e9;
     let skip = null;
     if (Date.now() - this.bootAt < PAPER_WARMUP_MS) { st.warmup++; skip = "warmup"; }
@@ -160,10 +161,23 @@ export class Relay extends DurableObject {
     const e = this.env, url = "https://api.elections.kalshi.com" + path;
     const headers = { accept: "application/json", ...(await kalshiHeaders(e.KALSHI_TRADE_KEY_ID, e.KALSHI_TRADE_PRIVATE_KEY, method, path.split("?")[0])) };
     if (body) headers["content-type"] = "application/json";
-    const r = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    let r = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    if (r.status === 429) {                           // Kalshi rate limit: wait a moment and try once more, freshly signed
+      await new Promise(res => setTimeout(res, LIVE_RETRY_MS));
+      const h2 = { ...headers, ...(await kalshiHeaders(e.KALSHI_TRADE_KEY_ID, e.KALSHI_TRADE_PRIVATE_KEY, method, path.split("?")[0])) };
+      r = await fetch(url, { method, headers: h2, body: body ? JSON.stringify(body) : undefined });
+    }
     const txt = await r.text(); let j = null; try { j = JSON.parse(txt); } catch {}
     if (!r.ok) throw new Error(`Kalshi ${method} ${path.split("?")[0]} HTTP ${r.status}: ${txt.slice(0, 160)}`);
     return j || {};
+  }
+  // Kalshi balance, cached for a minute; after a rate-limit error, back off and keep using a recent value.
+  async liveBalance() {
+    const now = Date.now(), c = this.balCache;
+    if (c && now - c.at < 60000) return c.value;
+    if (this.balBackoff && now < this.balBackoff) { if (c && now - c.at < 600000) return c.value; throw new Error("Kalshi balance rate-limited; retrying shortly"); }
+    try { const v = parseBalance(await this.kalshiTrade("GET", "/trade-api/v2/portfolio/balance")); this.balCache = { at: now, value: v }; this.balBackoff = 0; return v; }
+    catch (e) { if (/HTTP 429/.test(String(e.message))) this.balBackoff = now + 60000; if (c && now - c.at < 600000) return c.value; throw e; }
   }
   async liveMaybeTrade(close, T, q, quote) {
     const cfg = this.liveConfig();
@@ -173,7 +187,7 @@ export class Relay extends DurableObject {
     if (st.orders.some(o => o.close === close)) return;                                   // one order per window
     const block = liveGate(st, cfg, Date.now()); if (block) { st.lastSkip = block; await this.ctx.storage.put("live", st); return; }
     const acct = liveAccount(st, cfg);
-    let balance = null; try { balance = parseBalance(await this.kalshiTrade("GET", "/trade-api/v2/portfolio/balance")); } catch (e) { st.lastErr = "balance: " + String(e.message || e).slice(0, 160); }
+    let balance = null; try { balance = await this.liveBalance(); } catch (e) { st.lastErr = "balance: " + String(e.message || e).slice(0, 160); }
     const count = liveSize(acct.equity, Math.min(acct.available, balance == null ? 0 : balance), d, cfg.maxStake);
     if (count < 1) { st.lastSkip = balance == null ? "couldn't read the Kalshi balance" : "stake too small for one contract"; await this.ctx.storage.put("live", st); return; }
     const cents = Math.round(d.price * 100), id = `walls-${close}-${T}`;
@@ -201,7 +215,7 @@ export class Relay extends DurableObject {
     try { await this.liveSettle(); } catch (e) { const s2 = await this.liveState(); s2.lastErr = "settle: " + String(e.message || e).slice(0, 160); await this.ctx.storage.put("live", s2); }
     const cfg = this.liveConfig(), st = await this.liveState(), acct = liveAccount(st, cfg);
     let balance = null, balErr = "";
-    if (cfg.hasKey) { try { balance = parseBalance(await this.kalshiTrade("GET", "/trade-api/v2/portfolio/balance")); } catch (e) { balErr = String(e.message || e).slice(0, 160); } }
+    if (cfg.hasKey) { try { balance = await this.liveBalance(); } catch (e) { balErr = String(e.message || e).slice(0, 160); } }
     return { on: cfg.on, hasKey: cfg.hasKey, halted: !!st.halted, haltReason: st.haltReason || "", gate: liveGate(st, cfg, Date.now()),
       budget: cfg.budget, maxStake: cfg.maxStake, dailyLoss: cfg.dailyLoss, floor: cfg.floor, horizons: cfg.horizons, ...acct, balance, balErr,
       lastErr: st.lastErr || "", lastSkip: st.lastSkip || "", orders: st.orders.slice(-20).reverse() };
@@ -500,6 +514,8 @@ function yesFromMarket(m) { const q = quoteFromMarket(m); return q ? q.yes : nul
 const PAPER_MIN_EDGE = 0.03, PAPER_SLIP = 0.01, PAPER_DEPTH = 20, PAPER_FLAT = 25;
 const PAPER_KEY = "paper3:BTC-USD";                       // record using live order-book quotes (paper2 = market-list quotes)
 const PAPER_WARMUP_MS = 20 * 60000, PAPER_MAX_QUOTE_MS = 1500, PAPER_MAX_INDEX_AGE = 5;
+let LIVE_RETRY_MS = 1000;
+export function _setLiveRetryMs(ms) { LIVE_RETRY_MS = ms; }   // tests only
 // Kalshi order book -> Yes quote. The book lists bids only: best Yes ask = 1 - best No bid. Dollar or cent fields.
 function quoteFromBook(j) {
   const ob = (j && (j.orderbook_fp || j.orderbook)) || {};

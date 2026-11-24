@@ -128,3 +128,40 @@ console.log("live tests passed");
   j = await (await call("/live", "GET")).json(); assert.equal(j.on, true); assert.equal(j.budget, 25);
 }
 console.log("live stop/resume tests passed");
+
+// ---- rate limits (HTTP 429): one retry, cached balance, backoff
+M._setLiveRetryMs(0);
+{
+  // order: first attempt 429, retry succeeds -> exactly one placed order recorded, same client_order_id both times
+  let [rq, mq] = mk(liveEnv); calls = []; let n = 0;
+  const base = kalshi();
+  globalThis.fetch = async (url, opt = {}) => (String(url).includes("/portfolio/orders") && (opt.method === "POST") && n++ === 0)
+    ? (calls.push({ u: String(url), method: "POST", headers: opt.headers, body: JSON.parse(opt.body) }), new Response('{"error":{"code":"too_many_requests"}}', { status: 429 }))
+    : base(url, opt);
+  await rq.checkpoints("BTC-USD", cl - 300);
+  const ps = posts(); assert.equal(ps.length, 2, "retried once"); assert.equal(ps[0].body.client_order_id, ps[1].body.client_order_id, "same order id on retry");
+  assert.equal(mq.get("live").orders.length, 1); assert.equal(mq.get("live").orders[0].filled, 4);
+
+  // balance is cached for a minute: a report right after the trade doesn't call it again
+  const before = calls.filter(c => c.u.includes("/balance")).length; await rq.liveReport();
+  assert.equal(calls.filter(c => c.u.includes("/balance")).length, before, "balance served from cache");
+
+  // after the cache expires, a 429 (twice: original + retry) falls back to the recent value and backs off
+  rq.balCache.at -= 61000; calls = [];
+  globalThis.fetch = async (url, opt = {}) => String(url).includes("/balance") ? (calls.push({ u: String(url), method: "GET" }), new Response("{}", { status: 429 })) : base(url, opt);
+  let rep2 = await rq.liveReport(); assert.equal(rep2.balance, 50, "recent balance kept"); assert.equal(rep2.balErr, "");
+  assert.equal(calls.filter(c => c.u.includes("/balance")).length, 2);
+  calls = []; rep2 = await rq.liveReport(); assert.equal(calls.filter(c => c.u.includes("/balance")).length, 0, "backing off: no call");
+
+  // no cached value at all: the error shows, and no order is placed without a balance
+  let [rz, mz] = mk(liveEnv); calls = [];
+  globalThis.fetch = async (url, opt = {}) => String(url).includes("/balance") ? new Response("{}", { status: 429 }) : base(url, opt);
+  await rz.checkpoints("BTC-USD", cl - 300);
+  assert.equal(posts().length, 0); assert.match(mz.get("live").lastErr, /429/); assert.match(mz.get("live").lastSkip, /balance/);
+}
+// list-vs-book comparison sample is kept for the panel
+{
+  const [rc, mc] = mk({}); globalThis.fetch = kalshi(); await rc.checkpoints("BTC-USD", cl - 300);
+  const lc = mc.get("paperstat3").lastCmp; assert.deepEqual([lc.t, lc.list, lc.book, lc.bookSize], [300, [0.55, 0.57], [0.55, 0.57], [60, 80]]);
+}
+console.log("live rate-limit tests passed");

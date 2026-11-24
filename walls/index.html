@@ -789,9 +789,11 @@ function paperHtml() {
     (st.sized < st.book ? ` · <b class="down">book sizes missing (assuming ${A.depth} contracts)</b>` : "") +
     ((P.settled || 0) < 300 ? ` · <b>${P.settled || 0} of 300+ bets needed before trusting any result</b>` : "");
   const lag = st.diffN ? `<div>Market-list price vs live order book: off by ${(st.diffSum / st.diffN * 100).toFixed(1)}¢ on average, more than 5¢ apart ${Math.round(st.diff5 / st.diffN * 100)}% of the time.</div>` : "";
+  const lc = st.lastCmp, ct = x => x == null ? "—" : Math.round(x * 100) + "¢";
+  const lagLast = lc ? `<div style="font-size:11px">Last comparison (${lc.t / 60} min before a close): market list bid ${ct(lc.list[0])} / ask ${ct(lc.list[1])} · live book bid ${ct(lc.book[0])} / ask ${ct(lc.book[1])}${lc.bookSize ? ` (${lc.bookSize[0] ?? "?"} / ${lc.bookSize[1] ?? "?"} contracts)` : ""}</div>` : "";
   const prev = P.prev && P.prev.bets ? `<div style="font-size:11px">Previous record (market-list prices, now retired): ${P.prev.bets} bets, ${usd(P.prev.pnl)} at $${A.flat} flat stakes.</div>` : "";
   return `<div style="margin-top:10px"><b style="color:var(--text)">Paper trading · BTC · no real money · model only</b>` +
-    (P.sims || []).map(one).join("") + `<div style="margin-top:4px">${diag}</div>` + lag + prev +
+    (P.sims || []).map(one).join("") + `<div style="margin-top:4px">${diag}</div>` + lag + lagLast + prev +
     (bd ? `<table class="cpt"><thead><tr><th>Where the P&amp;L comes from</th><th>Bets</th><th>Won</th><th>$${A.flat} flat P&amp;L</th></tr></thead><tbody>${bd}</tbody></table>` : "") +
     (dd ? `<table class="cpt"><thead><tr><th>Day (UTC)</th><th>Bets</th><th>Won</th><th>$${A.flat} flat P&amp;L</th></tr></thead><tbody>${dd}</tbody></table>` +
       (days.length > 1 ? `<div style="font-size:11px">Best day ${usd(best)}, worst day ${usd(worst)}.</div>` : "") : "") +
