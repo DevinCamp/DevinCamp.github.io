@@ -22,7 +22,7 @@ async function route(req, env) {
       return stub.fetch(req);
     }
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
-    if (["/status", "/vapid", "/subscribe", "/unsubscribe", "/signals", "/test-push", "/results", "/paper"].includes(url.pathname)) return stub.fetch(req);
+    if (["/status", "/vapid", "/subscribe", "/unsubscribe", "/signals", "/test-push", "/results", "/paper", "/live", "/live/stop", "/live/resume"].includes(url.pathname)) return stub.fetch(req);
     return new Response("Kalshi relay is running. Connect the app to /ws.\n", { headers: { "content-type": "text/plain" } });
   }
 }
@@ -102,6 +102,7 @@ export class Relay extends DurableObject {
     }
     for (const c of pred) { try { await this.checkpoints(c, now); } catch (err) { errs.push(`checkpoint ${c}: ${err.message}`); } }
     try { await this.paperSettle(); } catch (err) { errs.push("paper settle: " + err.message); }
+    try { await this.liveSettle(); } catch (err) { errs.push("live settle: " + err.message); }
     if (errs.length) throw new Error(errs.join("; "));
   }
   // Earlier reads at 5, 3, 2 and 1 minute before each close, with Kalshi's own Yes price at the same moment, so the
@@ -142,6 +143,68 @@ export class Relay extends DurableObject {
     await this.ctx.storage.put("paperstat3", st);
     if (skip) return;
     await this.paperBet(close, T, sm.p, bq, { listYes: listQ ? listQ.yes : null, ms: bq.ms, ixAge: +ixAge.toFixed(1) });   // model only
+    try { await this.liveMaybeTrade(close, T, sm.p, bq); } catch (e) { const ls = await this.liveState(); ls.lastErr = "trade: " + String(e.message || e).slice(0, 200); await this.ctx.storage.put("live", ls); }
+  }
+  // ---------------- LIVE TRADING (real money, BTC only) ----------------
+  // Off unless the Cloudflare secret LIVE_TRADING is "on" AND a separate trading key is set. Same signal and
+  // guards as the paper bot, plus a hard budget, per-bet cap, daily loss stop, order cap and a stop button.
+  liveConfig() {
+    const e = this.env || {}, n = (v, d) => { const x = num(v); return x == null ? d : x; };
+    return { on: String(e.LIVE_TRADING || "").toLowerCase() === "on", hasKey: !!(e.KALSHI_TRADE_KEY_ID && e.KALSHI_TRADE_PRIVATE_KEY),
+      budget: n(e.LIVE_BUDGET, 25), maxStake: Math.min(0.2, n(e.LIVE_MAX_STAKE, 0.10)), dailyLoss: n(e.LIVE_DAILY_LOSS, 0.20),
+      floor: n(e.LIVE_FLOOR, 10), maxOrdersDay: n(e.LIVE_MAX_ORDERS_DAY, 30),
+      horizons: String(e.LIVE_HORIZONS || "300").split(",").map(x => +x.trim()).filter(Boolean) };
+  }
+  async liveState() { return (await this.ctx.storage.get("live")) || { halted: false, orders: [] }; }
+  async kalshiTrade(method, path, body) {           // signed request with the TRADING key (never the feed key)
+    const e = this.env, url = "https://api.elections.kalshi.com" + path;
+    const headers = { accept: "application/json", ...(await kalshiHeaders(e.KALSHI_TRADE_KEY_ID, e.KALSHI_TRADE_PRIVATE_KEY, method, path.split("?")[0])) };
+    if (body) headers["content-type"] = "application/json";
+    const r = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    const txt = await r.text(); let j = null; try { j = JSON.parse(txt); } catch {}
+    if (!r.ok) throw new Error(`Kalshi ${method} ${path.split("?")[0]} HTTP ${r.status}: ${txt.slice(0, 160)}`);
+    return j || {};
+  }
+  async liveMaybeTrade(close, T, q, quote) {
+    const cfg = this.liveConfig();
+    if (!cfg.on || !cfg.hasKey || !cfg.horizons.includes(T) || !quote.ticker) return;
+    const d = paperDecide(q, quote.bid, quote.ask, quote.askSize, quote.bidSize); if (!d) return;
+    const st = await this.liveState();
+    if (st.orders.some(o => o.close === close)) return;                                   // one order per window
+    const block = liveGate(st, cfg, Date.now()); if (block) { st.lastSkip = block; await this.ctx.storage.put("live", st); return; }
+    const acct = liveAccount(st, cfg);
+    let balance = null; try { balance = parseBalance(await this.kalshiTrade("GET", "/trade-api/v2/portfolio/balance")); } catch (e) { st.lastErr = "balance: " + String(e.message || e).slice(0, 160); }
+    const count = liveSize(acct.equity, Math.min(acct.available, balance == null ? 0 : balance), d, cfg.maxStake);
+    if (count < 1) { st.lastSkip = balance == null ? "couldn't read the Kalshi balance" : "stake too small for one contract"; await this.ctx.storage.put("live", st); return; }
+    const cents = Math.round(d.price * 100), id = `walls-${close}-${T}`;
+    const o = { id, close, t: T, ticker: quote.ticker, side: d.side, limit: d.price, count, q: d.q, edge: d.edge, at: Math.floor(Date.now() / 1000), status: "sending" };
+    st.orders.push(o); st.orders = st.orders.slice(-500); await this.ctx.storage.put("live", st);   // record before sending: no double orders
+    try {
+      const res = await this.kalshiTrade("POST", "/trade-api/v2/portfolio/orders", { ticker: quote.ticker, client_order_id: id, type: "limit", action: "buy",
+        side: d.side, count, [d.side === "yes" ? "yes_price" : "no_price"]: cents, time_in_force: "immediate_or_cancel" });
+      const od = res.order || res; o.orderId = od.order_id || null; o.status = od.status || "sent"; o.filled = parseFilled(od, count);
+    } catch (e) { o.status = "error"; o.error = String(e.message || e).slice(0, 200); o.filled = 0; st.lastErr = o.error; }
+    await this.ctx.storage.put("live", st);
+  }
+  async liveSettle() {
+    const st = await this.liveState(), now = Date.now() / 1000;
+    const due = st.orders.filter(o => o.out == null && o.status !== "error" && o.close < now - 20); if (!due.length) return;
+    const done = new Map(); for (const m of await this.settled("KXBTC15M", 100)) { const res = String(m.result || "").toLowerCase(); if (res === "yes" || res === "no") done.set(Math.round(Date.parse(m.close_time) / 1000), res === "yes" ? "up" : "down"); }
+    for (const o of due) {
+      if (!done.has(o.close)) continue;
+      try { const f = parseFills(await this.kalshiTrade("GET", `/trade-api/v2/portfolio/fills?ticker=${encodeURIComponent(o.ticker)}`), o.side); if (f) { o.filled = f.count; o.avg = f.avg; } } catch (e) { o.fillErr = String(e.message || e).slice(0, 120); }
+      o.out = done.get(o.close); Object.assign(o, liveResult(o));
+    }
+    await this.ctx.storage.put("live", st);
+  }
+  async liveReport() {
+    try { await this.liveSettle(); } catch (e) { const s2 = await this.liveState(); s2.lastErr = "settle: " + String(e.message || e).slice(0, 160); await this.ctx.storage.put("live", s2); }
+    const cfg = this.liveConfig(), st = await this.liveState(), acct = liveAccount(st, cfg);
+    let balance = null, balErr = "";
+    if (cfg.hasKey) { try { balance = parseBalance(await this.kalshiTrade("GET", "/trade-api/v2/portfolio/balance")); } catch (e) { balErr = String(e.message || e).slice(0, 160); } }
+    return { on: cfg.on, hasKey: cfg.hasKey, halted: !!st.halted, haltReason: st.haltReason || "", gate: liveGate(st, cfg, Date.now()),
+      budget: cfg.budget, maxStake: cfg.maxStake, dailyLoss: cfg.dailyLoss, floor: cfg.floor, horizons: cfg.horizons, ...acct, balance, balErr,
+      lastErr: st.lastErr || "", lastSkip: st.lastSkip || "", orders: st.orders.slice(-20).reverse() };
   }
   async openMarket(coin, close) {
     const series = SERIES[coin]; if (!series) return null;
@@ -164,7 +227,7 @@ export class Relay extends DurableObject {
       r = await fetch(url, { headers: { accept: "application/json", ...(await kalshiHeaders(this.env.KALSHI_KEY_ID, this.env.KALSHI_PRIVATE_KEY, "GET", path)) } });
     if (!r.ok) throw new Error(`Kalshi orderbook HTTP ${r.status}`);
     const q = quoteFromBook(await r.json()); if (!q) return null;
-    q.ms = Date.now() - t0; return q;
+    q.ms = Date.now() - t0; q.ticker = m.ticker; return q;
   }
   // ---- paper trading (BTC only, no real money): what a bot following the model would have done, with Kalshi fees.
   async paperBet(close, T, q, quote, audit = {}) {
@@ -264,10 +327,16 @@ export class Relay extends DurableObject {
         pushDevices: subs.size, signals: this.sigErr ? { error: this.sigErr } : Object.fromEntries([...this.sigState].map(([k, v]) => [k, v.ema != null ? Math.round(v.ema * 100) + "% buyers" : "–"])) });
     }
     if (url.pathname === "/vapid") return json({ key: (await this.vapid()).pub });
-    if (url.pathname === "/subscribe" || url.pathname === "/unsubscribe" || url.pathname === "/signals" || url.pathname === "/test-push" || url.pathname === "/results" || url.pathname === "/paper") {
+    if (url.pathname === "/subscribe" || url.pathname === "/unsubscribe" || url.pathname === "/signals" || url.pathname === "/test-push" || url.pathname === "/results" || url.pathname === "/paper" || url.pathname.startsWith("/live")) {
       const auth = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
       if (!this.env.RELAY_CODE || auth !== this.env.RELAY_CODE) return json({ error: "wrong access code" }, 403);
       if (url.pathname === "/paper") return json(await this.paperReport());
+      if (url.pathname === "/live") return json(await this.liveReport());
+      if (url.pathname === "/live/stop" || url.pathname === "/live/resume") {
+        if (req.method !== "POST") return json({ error: "use POST" }, 405);
+        const st = await this.liveState(); st.halted = url.pathname === "/live/stop"; st.haltReason = st.halted ? "stopped from the app" : "";
+        await this.ctx.storage.put("live", st); return json(await this.liveReport());
+      }
       if (url.pathname === "/results") {
         const coin = url.searchParams.get("coin") || "BTC-USD";
         try { return json(await this.results(coin, Math.min(200, +url.searchParams.get("limit") || 96))); }
@@ -508,7 +577,53 @@ function bookRatio(bids, asks, mid, band) {
 // or fails, fall back to Kraken's public depth so alerts and reads keep running.
 const KRAKEN_PAIR = { "BTC-USD": "XBTUSD", "ETH-USD": "ETHUSD", "SOL-USD": "SOLUSD", "XRP-USD": "XRPUSD", "DOGE-USD": "XDGUSD" };
 const cbBackoff = { until: 0 };
-export { yesFromMarket, quoteFromBook, paperDecide, paperSim, paperBreakdown, paperDaily };
+// ---- live trading maths (pure, tested offline)
+function liveResult(o) {             // P&L of a settled order: filled contracts at the average (or limit) price, Kalshi fee estimate
+  const n = o.filled || 0, px = o.avg != null ? o.avg : o.limit, won = (o.side === "yes") === (o.out === "up");
+  const fee = n ? Math.ceil(kalshiFee(px) * n * 100) / 100 : 0;
+  return { won, fee: +fee.toFixed(2), pnl: n ? +((won ? n * (1 - px) : -n * px) - fee).toFixed(2) : 0 };
+}
+function liveAccount(st, cfg) {      // the bot's own $ pot: budget + settled P&L; open orders are tied up
+  const settled = st.orders.filter(o => o.out != null), open = st.orders.filter(o => o.out == null && o.status !== "error" && (o.filled || 0) > 0);
+  const realized = +settled.reduce((a, o) => a + (o.pnl || 0), 0).toFixed(2);
+  const openCost = +open.reduce((a, o) => a + o.filled * (o.limit + kalshiFee(o.limit)), 0).toFixed(2);
+  const day = new Date().toISOString().slice(0, 10), today = settled.filter(o => new Date(o.close * 1000).toISOString().slice(0, 10) === day);
+  return { realized, openCost, equity: +(cfg.budget + realized).toFixed(2), available: +(cfg.budget + realized - openCost).toFixed(2),
+    todayPnl: +today.reduce((a, o) => a + (o.pnl || 0), 0).toFixed(2), wins: settled.filter(o => o.won && o.filled).length, filledBets: settled.filter(o => o.filled).length };
+}
+function liveGate(st, cfg, nowMs) {  // reason the bot must not trade right now, or null
+  if (!cfg.on) return "LIVE_TRADING is not on";
+  if (!cfg.hasKey) return "no trading key set";
+  if (st.halted) return "stopped" + (st.haltReason ? ": " + st.haltReason : "");
+  const a = liveAccount(st, cfg), day = new Date(nowMs).toISOString().slice(0, 10);
+  if (a.equity < cfg.floor) return `pot is down to $${a.equity}, below the $${cfg.floor} floor`;
+  if (a.todayPnl <= -cfg.dailyLoss * cfg.budget) return `daily loss limit hit ($${a.todayPnl})`;
+  if (st.orders.filter(o => new Date(o.at * 1000).toISOString().slice(0, 10) === day).length >= cfg.maxOrdersDay) return "daily order limit hit";
+  return null;
+}
+function liveSize(equity, available, d, maxStake) {   // whole contracts: min(maxStake, half Kelly) of the pot, never more than is free or on offer
+  const cost = d.price + kalshiFee(d.price), stake = Math.min(equity * Math.min(maxStake, d.kelly), available);
+  let n = Math.floor(stake / cost); if (d.depth != null) n = Math.min(n, Math.floor(d.depth));
+  return Math.max(0, n);
+}
+function parseBalance(j) { const c = num(j.balance); if (c != null) return c / 100; const d = num(j.balance_dollars); return d; }   // dollars
+function parseFilled(od, count) {
+  for (const k of ["fill_count", "fill_count_fp", "taker_fill_count"]) { const v = num(od[k]); if (v != null) return v; }
+  const rem = num(od.remaining_count ?? od.remaining_count_fp), init = num(od.initial_count ?? od.initial_count_fp) ?? count;
+  if (rem != null) return Math.max(0, init - rem);
+  return String(od.status || "") === "executed" ? count : 0;
+}
+function parseFills(j, side) {       // our buys on one side of one market: total contracts and average price (dollars)
+  let n = 0, cost = 0;
+  for (const f of (j.fills || [])) {
+    if (String(f.action || "buy") !== "buy" || String(f.side || "") !== side) continue;
+    const c = num(f.count ?? f.count_fp); const pd = num(side === "yes" ? f.yes_price_dollars ?? f.yes_price_fixed : f.no_price_dollars ?? f.no_price_fixed);
+    const pc = num(side === "yes" ? f.yes_price : f.no_price); const p = pd != null ? pd : pc != null ? pc / 100 : null;
+    if (c == null || p == null) continue; n += c; cost += c * p;
+  }
+  return n ? { count: n, avg: +(cost / n).toFixed(4) } : null;
+}
+export { yesFromMarket, quoteFromBook, paperDecide, paperSim, paperBreakdown, paperDaily, liveResult, liveAccount, liveGate, liveSize, parseBalance, parseFilled, parseFills };
 export async function fetchBook(coin) {
   if (Date.now() >= cbBackoff.until) {
     try {

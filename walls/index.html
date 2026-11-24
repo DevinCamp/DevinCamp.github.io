@@ -249,6 +249,7 @@
   <div class="dlg wide">
     <div class="row" style="align-items:center"><h3 id="resTitle">Past 15-minute results</h3><span style="flex:1"></span><button type="button" id="resClose">Close</button></div>
     <div id="resSummary" class="hint"></div>
+    <div id="liveBox" class="hint"></div>
     <div id="paperBox" class="hint"></div>
     <div class="tbl"><table id="resTable"><thead><tr><th>Window closed</th><th>Target</th><th>Final</th><th>Move</th><th>Result</th><th>App's read*</th><th></th></tr></thead><tbody></tbody></table></div>
     <p class="hint" style="font-size:11px">Results are Kalshi's settled 15-minute Up/Down markets (final 60-second average of the CF Benchmarks index vs. the target). *App's read = recorded by your relay one minute before the close (earlier checkpoints are in the table above): the chance the final-60s average ends above the target (distance to target, time left, volatility, plus the order-book lean). Older rows show the order-book lean only (±0.25%, smoothed). Past results don't guarantee future ones.</p>
@@ -703,8 +704,11 @@ async function loadResults(force) {
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || "relay error " + r.status);
     RES.coin = S.product; RES.rows = j.rows || []; RES.since = j.trackedSince; RES.at = Date.now(); RES.err = "";
-    RES.paper = null;
-    if (S.product === "BTC-USD") { try { const pr = await fetch(`${relayBase()}/paper`, { headers: { authorization: "Bearer " + OFF.code } }); if (pr.ok) RES.paper = await pr.json(); } catch {} }
+    RES.paper = null; RES.live = null;
+    if (S.product === "BTC-USD") {
+      try { const pr = await fetch(`${relayBase()}/paper`, { headers: { authorization: "Bearer " + OFF.code } }); if (pr.ok) RES.paper = await pr.json(); } catch {}
+      try { const lr = await fetch(`${relayBase()}/live`, { headers: { authorization: "Bearer " + OFF.code } }); if (lr.ok) RES.live = await lr.json(); } catch {}
+    }
   } catch (err) { RES.err = /404|Not Found/.test(err.message) ? "Your relay needs the latest update (it updates automatically from GitHub)." : "Couldn't load results: " + err.message; }
   renderResults();
 }
@@ -721,6 +725,45 @@ function cpTable() {
   return `<table class="cpt"><thead><tr><th>Before close</th><th>Windows</th><th>Model</th><th>+ book</th><th>Kalshi price</th><th>Error: + book</th><th>Error: Kalshi</th></tr></thead><tbody>${rows.join("")}</tbody></table>` +
     `<div class="hint" style="font-size:11px">Accuracy = how often each read picked the winning side. Error = average squared miss (lower is better, 0.25 = coin flip). If the model's error isn't below Kalshi's, it has no edge over the market.</div>`;
 }
+// ---- live trading (real money) status, from the relay. Turning it on happens only in Cloudflare.
+function liveHtml() {
+  if (S.product !== "BTC-USD") return "";
+  const L = RES.live; if (!L) return "";
+  const usd = x => x == null ? "—" : (x < 0 ? "−$" : "$") + Math.abs(x).toFixed(2);
+  const sgn = x => (x >= 0 ? "+" : "−") + "$" + Math.abs(x).toFixed(2);
+  let state, cls = "hint";
+  if (!L.on) state = "Off. Nothing is traded until you add the LIVE_TRADING secret in Cloudflare.";
+  else if (!L.hasKey) state = "On, but no trading key is set, so nothing is traded.";
+  else if (L.halted) { state = "Stopped" + (L.haltReason ? ` (${L.haltReason})` : "") + "."; cls = "down"; }
+  else if (L.gate) { state = "Paused: " + L.gate + "."; cls = "down"; }
+  else { state = "Running with real money."; cls = "up"; }
+  const tf = new Intl.DateTimeFormat([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  const rows = (L.orders || []).slice(0, 10).map(o => {
+    const res = o.status === "error" ? `<span class="down">error</span>` : !(o.filled > 0) && o.out == null ? `<span class="hint">${o.status === "sending" ? "sending" : "not filled"}</span>`
+      : o.out == null ? "open" : o.filled ? `<span class="${o.won ? "up" : "down"}">${o.won ? "won" : "lost"} ${sgn(o.pnl)}</span>` : `<span class="hint">not filled</span>`;
+    return `<tr><td>${tf.format(new Date(o.at * 1000))}</td><td>${o.side.toUpperCase()} @ ${Math.round((o.avg ?? o.limit) * 100)}¢</td><td>${o.filled ?? 0}/${o.count}</td><td>${res}</td></tr>`;
+  }).join("");
+  const btn = L.on && L.hasKey ? (L.halted ? `<button type="button" data-live="resume">Resume live trading</button>` : `<button type="button" data-live="stop" style="border-color:var(--down);color:var(--down)">Stop live trading now</button>`) : "";
+  return `<div style="margin-top:10px;padding:10px 12px;border:1px solid ${L.on && L.hasKey && !L.halted ? "var(--down)" : "var(--line)"};border-radius:10px">` +
+    `<b style="color:var(--text)">Live trading · BTC · real money</b><div class="${cls}">${state}</div>` +
+    (L.on || (L.orders || []).length ? `<div>Pot ${usd(L.equity)} of a ${usd(L.budget)} budget (${sgn(L.realized || 0)} so far, ${sgn(L.todayPnl || 0)} today)` +
+      (L.openCost ? ` · ${usd(L.openCost)} in open bets` : "") + (L.balance != null ? ` · Kalshi balance ${usd(L.balance)}` : "") +
+      (L.filledBets ? ` · ${L.filledBets} filled bets, ${L.wins} won` : "") + `</div>` : "") +
+    (L.lastErr ? `<div class="down" style="font-size:11px">Last error: ${L.lastErr.replace(/</g, "&lt;")}</div>` : "") +
+    (L.balErr ? `<div class="down" style="font-size:11px">Balance: ${L.balErr.replace(/</g, "&lt;")}</div>` : "") +
+    (rows ? `<table class="cpt"><thead><tr><th>Placed</th><th>Bet</th><th>Filled</th><th>Result</th></tr></thead><tbody>${rows}</tbody></table>` : "") +
+    `<div style="font-size:11px">Rules: same signal as paper trading, only ${(L.horizons || [300]).map(t => t / 60 + " min").join(", ")} before the close; at most ${Math.round((L.maxStake || 0.1) * 100)}% of the pot per bet (less on a small edge); one order per window, filled immediately or cancelled; stops for the day after losing ${Math.round((L.dailyLoss || 0.2) * 100)}% of the budget, and for good if the pot falls below ${usd(L.floor)}. It never uses more than the ${usd(L.budget)} budget plus its own winnings.</div>` +
+    (btn ? `<div style="margin-top:8px">${btn}</div>` : "") + `</div>`;
+}
+async function liveCtl(what) {
+  if (what === "resume" && !confirm("Resume live trading with real money?")) return;
+  try {
+    const r = await fetch(`${relayBase()}/live/${what}`, { method: "POST", headers: { authorization: "Bearer " + OFF.code } });
+    if (r.ok) RES.live = await r.json(); else alert("The relay didn't accept that (HTTP " + r.status + ").");
+  } catch (err) { alert("Couldn't reach the relay: " + err.message); }
+  renderResults();
+}
+document.addEventListener("click", e => { const b = e.target.closest && e.target.closest("[data-live]"); if (b) liveCtl(b.dataset.live); });
 function paperHtml() {
   if (S.product !== "BTC-USD") return "";
   const P = RES.paper; if (!P) return "";
@@ -762,6 +805,7 @@ function renderResults() {
   if ($("resDlg").hidden) return;
   $("resTitle").textContent = `Past 15-minute results · ${base()}`;
   $("paperBox").innerHTML = RES.err ? "" : paperHtml();
+  $("liveBox").innerHTML = RES.err ? "" : liveHtml();
   const tb = $("resTable").tBodies[0];
   if (RES.err) { $("resSummary").textContent = RES.err; tb.innerHTML = ""; return; }
   const n = RES.rows.length, ups = RES.rows.filter(r => r.outcome === "up").length;

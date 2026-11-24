@@ -3,6 +3,12 @@
 #   KALSHI_KEY_ID       – the Kalshi API key ID (use a READ-ONLY key)
 #   KALSHI_PRIVATE_KEY  – contents of the private key file Kalshi gave you
 #   RELAY_CODE          – any access code; the app must send the same code
+# Live trading (real money, BTC only). OFF unless BOTH of these are set, as Secrets (so deploys never wipe them):
+#   LIVE_TRADING              – "on" to trade; delete it or set "off" to stop
+#   KALSHI_TRADE_KEY_ID       – a SEPARATE Kalshi key that is allowed to trade (the feed key above stays read-only)
+#   KALSHI_TRADE_PRIVATE_KEY  – that key's private key
+# Optional limits (Secrets too): LIVE_BUDGET (default 25 $), LIVE_MAX_STAKE (0.10, never above 0.20),
+#   LIVE_DAILY_LOSS (0.20 of budget), LIVE_FLOOR (10 $), LIVE_MAX_ORDERS_DAY (30), LIVE_HORIZONS ("300" seconds before close)
 name = "kalshi-relay"
 main = "src/index.js"
 compatibility_date = "2026-10-01"

@@ -7,3 +7,4 @@
     node test/settle.test.mjs # settle-aware read: sanity checks + relay/app copies identical
     node test/yes.test.mjs    # Kalshi Yes price parsing
     node test/paper.test.mjs  # paper trading: bet decision, sizing, replay
+    node test/live.test.mjs   # live trading: sizing, safety gates, signed orders, settlement, stop/resume (mocked Kalshi)
