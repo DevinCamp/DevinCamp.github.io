@@ -2,7 +2,7 @@
 import fs from "fs"; import os from "os"; import path from "path"; import assert from "assert";
 const src = fs.readFileSync(new URL("../src/index.js", import.meta.url), "utf8").replace(/^import .*$/m, "class DurableObject {}");
 const f = path.join(os.tmpdir(), "relay_mod_paper.mjs"); fs.writeFileSync(f, src);
-const { paperDecide, paperSim, paperBreakdown, paperDaily, yesFromMarket, Relay } = await import(f);
+const { paperDecide, paperSim, paperBreakdown, paperDaily, yesFromMarket, quoteFromBook, Relay } = await import(f);
 
 // ---- decision
 assert.equal(paperDecide(0.5, 0.49, 0.51), null, "no edge, no bet");
@@ -40,23 +40,51 @@ const quote = { yes: 0.56, bid: 0.55, ask: 0.57, askSize: 80, bidSize: 60 };
 await relay.paperBet(close, 180, 0.85, quote);
 await relay.paperBet(close, 120, 0.85, quote);                                // same window: ignored
 await relay.paperBet(close + 900, 180, 0.50, { yes: 0.50, bid: 0.49, ask: 0.51 });   // no edge: no bet
-assert.equal(mem.get("paper2:BTC-USD").length, 1);
+assert.equal(mem.get("paper3:BTC-USD").length, 1);
 globalThis.fetch = async () => new Response(JSON.stringify({ markets: [{ close_time: new Date(close * 1000).toISOString(), result: "yes" }] }));
 const rep = await relay.paperReport();
 assert.equal(rep.open, 0); assert.equal(rep.settled, 1);
 const flat = rep.sims.find(x => x.flat); assert.equal(flat.bets, 1); assert(flat.pnl > 0 && flat.pnl <= 80 * 0.42 + 0.01);
 
-// checkpoint: records a cp row, counts quotes/sizes, and places a paper bet
-const mem2 = new Map(), r2 = Object.create(Relay.prototype);
-r2.ctx = { storage: { get: async k => mem2.get(k), put: async (k, v) => { mem2.set(k, JSON.parse(JSON.stringify(v))); } } };
-const cl = Math.floor(Date.now() / 1000 / 900) * 900, now = cl - 180, pts = [];
+// ---- order book parsing: bids only; Yes ask = 1 - best No bid; cents or dollars; quantities at the best price add up
+const qb = quoteFromBook({ orderbook: { yes: [[40, 10], [55, 30], [55, 5]], no: [[30, 20], [43, 80]] } });
+assert.deepEqual([qb.bid, qb.ask, qb.bidSize, qb.askSize, qb.yes], [0.55, 0.57, 35, 80, 0.56]);
+const qd = quoteFromBook({ orderbook_fp: { yes_dollars: [["0.5500", "60"]], no_dollars: [["0.4300", "80"]] } });
+assert.deepEqual([qd.bid, qd.ask, qd.bidSize, qd.askSize], [0.55, 0.57, 60, 80]);
+const q1 = quoteFromBook({ orderbook: { yes: [[20, 5]], no: null } }); assert.equal(q1.ask, null); assert.equal(q1.bid, 0.2);
+assert.equal(quoteFromBook({ orderbook: { yes: null, no: null } }), null);
+
+// ---- checkpoint flow: market list for the ticker and comparison, live order book for the paper bet
+const mkRelay = () => { const m = new Map(), r = Object.create(Relay.prototype); r.env = {};
+  r.ctx = { storage: { get: async k => m.get(k), put: async (k, v) => { m.set(k, JSON.parse(JSON.stringify(v))); } } }; return [r, m]; };
+const cl = Math.ceil(Date.now() / 1000 / 900) * 900 + 900, now = cl - 180, pts = [];
 for (let t = cl - 900 - 200; t <= now; t++) pts.push([t, (t < cl - 900 ? 100000 : 100060) + Math.sin(t)]);
-r2.hist = new Map([["BRTI", pts]]);
-globalThis.fetch = async () => new Response(JSON.stringify({ markets: [{ close_time: new Date(cl * 1000).toISOString(), yes_bid_dollars: "0.5500", yes_ask_dollars: "0.5700", yes_bid_size_fp: "60", yes_ask_size_fp: "80" }] }));
+const listJson = { markets: [{ ticker: "KXBTC15M-TEST", close_time: new Date(cl * 1000).toISOString(), yes_bid_dollars: "0.3000", yes_ask_dollars: "0.3200" }] };
+const bookJson = { orderbook: { yes: [[55, 60]], no: [[43, 80]] } };
+const route = (delay = 0) => async url => { if (delay) await new Promise(r => setTimeout(r, delay));
+  return new Response(JSON.stringify(String(url).includes("/orderbook") ? bookJson : listJson)); };
+
+let [r2, mem2] = mkRelay(); r2.hist = new Map([["BRTI", pts]]); r2.bootAt = Date.now() - 3600e3;
+globalThis.fetch = route();
 await r2.checkpoints("BTC-USD", now);
-const cp = mem2.get("cp:BTC-USD"); assert(cp && cp.length === 1 && cp[0].t === 180 && cp[0].yes === 0.56, "checkpoint row saved");
-const st = mem2.get("paperstat2"); assert.deepEqual([st.cps, st.quotes, st.twoSided, st.sized], [1, 1, 1, 1]);
-const pb = mem2.get("paper2:BTC-USD"); assert(pb && pb.length === 1 && pb[0].side === "yes" && pb[0].depth === 80, "model far above target vs a 56c Yes price: buys Yes");
+const cp = mem2.get("cp:BTC-USD"); assert(cp && cp.length === 1 && cp[0].t === 180 && cp[0].yes === 0.31, "checkpoint row keeps the market-list price");
+let st = mem2.get("paperstat3"); assert.deepEqual([st.cps, st.book, st.sized, st.stale, st.warmup, st.diffN, st.diff5], [1, 1, 1, 0, 0, 1, 1]);
+const pb = mem2.get("paper3:BTC-USD");
+assert(pb && pb.length === 1 && pb[0].side === "yes", "bets on the live book");
+assert.equal(pb[0].price, 0.58, "live ask 57c + 1c, not the list's 32c"); assert.equal(pb[0].depth, 80); assert.equal(pb[0].listYes, 0.31);
+
+[r2, mem2] = mkRelay(); r2.hist = new Map([["BRTI", pts]]); r2.bootAt = Date.now();          // just restarted
+globalThis.fetch = route(); await r2.checkpoints("BTC-USD", now);
+assert.equal(mem2.get("paperstat3").warmup, 1); assert.equal(mem2.get("paper3:BTC-USD"), undefined, "no bets during warm-up");
+
+[r2, mem2] = mkRelay(); r2.hist = new Map([["BRTI", pts]]); r2.bootAt = Date.now() - 3600e3;
+globalThis.fetch = route(1600); await r2.checkpoints("BTC-USD", now);                       // slow quote
+assert.equal(mem2.get("paperstat3").stale, 1); assert.equal(mem2.get("paper3:BTC-USD"), undefined, "no bets on slow quotes");
+
+[r2, mem2] = mkRelay(); r2.hist = new Map([["BRTI", pts]]); r2.bootAt = Date.now() - 3600e3;
+globalThis.fetch = async url => String(url).includes("/orderbook") ? new Response("{}", { status: 500 }) : new Response(JSON.stringify(listJson));
+await r2.checkpoints("BTC-USD", now);
+st = mem2.get("paperstat3"); assert.equal(st.bookFail, 1); assert(/500/.test(st.lastErr)); assert.equal(mem2.get("cp:BTC-USD").length, 1, "checkpoint still recorded");
 console.log("paper tests passed");
 
 // ---- daily P&L: grouped by UTC day, newest first, unsettled ignored

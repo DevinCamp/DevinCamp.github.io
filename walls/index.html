@@ -727,7 +727,7 @@ function paperHtml() {
   const usd = x => (x >= 0 ? "+$" : "−$") + Math.abs(x).toLocaleString("en-US", { maximumFractionDigits: 2 });
   const pc = x => (x >= 0 ? "+" : "") + (x * 100).toFixed(1) + "%";
   const A = P.assumed || { flat: 25, slip: 0.01, depth: 20, minEdge: 0.03 };
-  const st = P.stats || { cps: 0, quotes: 0, twoSided: 0, sized: 0 };
+  const st = P.stats || { cps: 0, book: 0, bookFail: 0, stale: 0, warmup: 0, sized: 0, diffN: 0, diffSum: 0, diff5: 0 };
   const one = x => {
     const lbl = x.flat ? `$${x.flat} flat stakes` : `${Math.round(x.cap * 100)}% max stake, compounding`;
     if (!x.bets) return `<div style="padding-left:10px">${lbl}: no settled bets yet</div>`;
@@ -739,17 +739,20 @@ function paperHtml() {
   const dd = days.slice(0, 14).map(d => `<tr><td>${d.day.slice(5)}${days.length > 1 && d.pnl === best ? " ★ best" : days.length > 1 && d.pnl === worst ? " ▼ worst" : ""}</td><td>${d.bets}</td><td>${Math.round(d.wins / d.bets * 100)}%</td><td class="${d.pnl >= 0 ? "up" : "down"}">${usd(d.pnl)}</td></tr>`).join("");
   let diag;
   if (!st.cps) diag = "No checkpoints recorded yet. The relay needs about 16 minutes of index history after each update.";
-  else if (!st.quotes) diag = `<b class="down">${st.cps} checkpoints, none had a Kalshi price.</b> The relay can't read the market quote.`;
-  else if (!st.twoSided) diag = `<b class="down">${st.quotes} Kalshi prices, but none with both a bid and an ask.</b>`;
-  else diag = `${st.cps} checkpoints · ${st.twoSided} with a full quote · ${P.settled || 0} bets settled${P.open ? `, ${P.open} waiting` : ""}` +
-    (st.sized < st.twoSided ? ` · <b class="down">quote sizes not available (assuming ${A.depth} contracts per bet)</b>` : "") +
+  else if (!st.book) diag = `<b class="down">${st.cps} checkpoints, but the relay couldn't read Kalshi's live order book${st.lastErr ? ` (${st.lastErr})` : ""}.</b> No paper bets until that works.`;
+  else diag = `${st.cps} checkpoints · ${st.book} live order-book quotes` + (st.bookFail ? ` · ${st.bookFail} failed` : "") +
+    (st.stale ? ` · ${st.stale} skipped as stale` : "") + (st.warmup ? ` · ${st.warmup} skipped while the relay warmed up` : "") +
+    ` · ${P.settled || 0} bets settled${P.open ? `, ${P.open} waiting` : ""}` +
+    (st.sized < st.book ? ` · <b class="down">book sizes missing (assuming ${A.depth} contracts)</b>` : "") +
     ((P.settled || 0) < 300 ? ` · <b>${P.settled || 0} of 300+ bets needed before trusting any result</b>` : "");
+  const lag = st.diffN ? `<div>Market-list price vs live order book: off by ${(st.diffSum / st.diffN * 100).toFixed(1)}¢ on average, more than 5¢ apart ${Math.round(st.diff5 / st.diffN * 100)}% of the time.</div>` : "";
+  const prev = P.prev && P.prev.bets ? `<div style="font-size:11px">Previous record (market-list prices, now retired): ${P.prev.bets} bets, ${usd(P.prev.pnl)} at $${A.flat} flat stakes.</div>` : "";
   return `<div style="margin-top:10px"><b style="color:var(--text)">Paper trading · BTC · no real money · model only</b>` +
-    (P.sims || []).map(one).join("") + `<div style="margin-top:4px">${diag}</div>` +
+    (P.sims || []).map(one).join("") + `<div style="margin-top:4px">${diag}</div>` + lag + prev +
     (bd ? `<table class="cpt"><thead><tr><th>Where the P&amp;L comes from</th><th>Bets</th><th>Won</th><th>$${A.flat} flat P&amp;L</th></tr></thead><tbody>${bd}</tbody></table>` : "") +
     (dd ? `<table class="cpt"><thead><tr><th>Day (UTC)</th><th>Bets</th><th>Won</th><th>$${A.flat} flat P&amp;L</th></tr></thead><tbody>${dd}</tbody></table>` +
       (days.length > 1 ? `<div style="font-size:11px">Best day ${usd(best)}, worst day ${usd(worst)}.</div>` : "") : "") +
-    `<div style="font-size:11px">Strict rules: bets only when the model's edge over Kalshi's price, after the fee and ${Math.round(A.slip * 100)}¢ of slippage, is at least ${Math.round(A.minEdge * 100)} points. Buys at the ask plus ${Math.round(A.slip * 100)}¢, limited to the quantity shown at that price. One bet per window. Compounding runs use half-Kelly capped at the %, and stop for the day after losing 20%.</div></div>`;
+    `<div style="font-size:11px">Strict rules: prices come from Kalshi's live order book, and a bet is skipped if the quote took over 1.5 s, the index is over 5 s old, or the relay restarted in the last 20 min. Bets only when the model's edge over Kalshi's price, after the fee and ${Math.round(A.slip * 100)}¢ of slippage, is at least ${Math.round(A.minEdge * 100)} points. Buys at the ask plus ${Math.round(A.slip * 100)}¢, limited to the quantity shown at that price. One bet per window. Compounding runs use half-Kelly capped at the %, and stop for the day after losing 20%.</div></div>`;
 }
 function renderResults() {
   const dots = $("resDots");
