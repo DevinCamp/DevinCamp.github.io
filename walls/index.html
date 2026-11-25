@@ -740,7 +740,7 @@ function liveHtml() {
   else { state = "Running with real money."; cls = "up"; }
   const tf = new Intl.DateTimeFormat([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   const rows = (L.orders || []).slice(0, 10).map(o => {
-    const res = o.status === "error" ? `<span class="down">error</span>` : !(o.filled > 0) && o.out == null ? `<span class="hint">${o.status === "sending" ? "sending" : "not filled"}</span>`
+    const res = o.status === "error" ? `<span class="down" title="${(o.error || "").replace(/"/g, "&quot;")}">error</span>` : !(o.filled > 0) && o.out == null ? `<span class="hint">${o.status === "sending" ? "sending" : "not filled"}</span>`
       : o.out == null ? "open" : o.filled ? `<span class="${o.won ? "up" : "down"}">${o.won ? "won" : "lost"} ${sgn(o.pnl)}</span>` : `<span class="hint">not filled</span>`;
     return `<tr><td>${tf.format(new Date(o.at * 1000))}</td><td>${o.side.toUpperCase()} @ ${Math.round((o.avg ?? o.limit) * 100)}¢</td><td>${o.filled ?? 0}/${o.count}</td><td>${res}</td></tr>`;
   }).join("");

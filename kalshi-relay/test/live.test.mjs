@@ -4,7 +4,7 @@ import fs from "fs"; import os from "os"; import path from "path"; import assert
 const src = fs.readFileSync(new URL("../src/index.js", import.meta.url), "utf8").replace(/^import .*$/m, "class DurableObject {}");
 const f = path.join(os.tmpdir(), "relay_mod_live.mjs"); fs.writeFileSync(f, src);
 const M = await import(f);
-const { liveSize, liveGate, liveResult, liveAccount, parseBalance, parseFilled, parseFills, Relay } = M;
+const { liveSize, liveGate, liveResult, liveAccount, parseBalance, parseFilled, parseFills, snapPrice, liveOrderBody, liveOrderResult, Relay } = M;
 
 // ---- sizing: min(max stake, half Kelly) of the pot, whole contracts, never more than is free or on offer
 const fee = p => 0.07 * p * (1 - p);
@@ -39,7 +39,28 @@ assert.equal(liveGate({ orders: [] }, cfg, Date.now()), null);
 assert.equal(parseBalance({ balance: 2512 }), 25.12); assert.equal(parseBalance({ balance_dollars: "25.12" }), 25.12);
 assert.equal(parseFilled({ fill_count: 3 }, 4), 3); assert.equal(parseFilled({ remaining_count: 1, initial_count: 4 }, 4), 3);
 assert.equal(parseFilled({ status: "executed" }, 4), 4); assert.equal(parseFilled({ status: "canceled" }, 4), 0);
-assert.deepEqual(parseFills({ fills: [{ side: "yes", action: "buy", count: 2, yes_price: 57 }, { side: "yes", action: "buy", count: 2, yes_price: 59 }, { side: "no", action: "buy", count: 9, no_price: 40 }] }, "yes"), { count: 4, avg: 0.58 });
+assert.deepEqual(parseFills({ fills: [{ side: "yes", action: "buy", count: 2, yes_price: 57 }, { side: "yes", action: "buy", count: 2, yes_price: 59 }, { side: "no", action: "buy", count: 9, no_price: 40 }] }, "yes"), { count: 4, avg: 0.58, fee: null });
+// current fill shape (docs: outcome_side/book_side, count_fp, *_price_dollars, fee_cost)
+assert.deepEqual(parseFills({ fills: [
+  { outcome_side: "no", book_side: "ask", count_fp: "3.00", yes_price_dollars: "0.5400", no_price_dollars: "0.4600", fee_cost: "0.0500" },
+  { outcome_side: "no", book_side: "ask", count_fp: "1.00", yes_price_dollars: "0.5000", no_price_dollars: "0.5000", fee_cost: "0.0200" },
+  { outcome_side: "yes", book_side: "bid", count_fp: "9.00", yes_price_dollars: "0.5000", no_price_dollars: "0.5000", fee_cost: "0.1000" }] }, "no"), { count: 4, avg: 0.47, fee: 0.07 });
+
+// ---- price grid (this series: tapered_deci_cent) and the V2 order body
+assert.equal(snapPrice(0.583, null, "down"), 0.58); assert.equal(snapPrice(0.581, null, "up"), 0.59);
+assert.equal(snapPrice(0.0347, null, "down"), 0.034); assert.equal(snapPrice(0.9512, null, "up"), 0.952);
+assert.equal(snapPrice(0.58, null, "down"), 0.58, "already on the grid");
+assert.equal(snapPrice(1.2, null, "down"), 0.999); assert.equal(snapPrice(-0.1, null, "up"), 0.001);
+const by = liveOrderBody("T", "id1", "yes", 0.583, 4, null);
+assert.deepEqual(by, { ticker: "T", client_order_id: "id1", side: "bid", count: "4", price: "0.5800", time_in_force: "immediate_or_cancel", self_trade_prevention_type: "taker_at_cross", limitOurSide: 0.58 });
+const bn = liveOrderBody("T", "id2", "no", 0.46, 3, null);    // buy NO at most 46c = sell YES at no less than 54c
+assert.deepEqual([bn.side, bn.price, bn.count, bn.limitOurSide], ["ask", "0.5400", "3", 0.46]);
+const bn2 = liveOrderBody("T", "id3", "no", 0.457, 3, null);  // 54.3c isn't on the 1c grid: round the YES price up so NO never costs more
+assert.deepEqual([bn2.price, bn2.limitOurSide], ["0.5500", 0.45]);
+assert.deepEqual(liveOrderResult({ order_id: "o9", fill_count: "3.00", remaining_count: "0.00", average_fill_price: "0.5400", average_fee_paid: "0.0174" }, "no"),
+  { orderId: "o9", filled: 3, status: "filled", avg: 0.46, feeEach: 0.0174 });
+assert.deepEqual(liveOrderResult({ order_id: "o8", fill_count: "0.00", remaining_count: "0.00" }, "yes"), { orderId: "o8", filled: 0, status: "not filled" });
+assert.equal(liveResult({ side: "no", out: "down", filled: 3, limit: 0.46, avg: 0.46, feeEach: 0.0174 }).pnl, +(3 * 0.54 - 3 * 0.0174).toFixed(2), "uses Kalshi's actual fee");
 assert.equal(parseFills({ fills: [] }, "yes"), null);
 
 // ---- full flow with a mocked Kalshi
@@ -54,9 +75,10 @@ let calls = [];
 const kalshi = (over = {}) => async (url, opt = {}) => {
   const u = String(url), method = opt.method || "GET"; calls.push({ u, method, headers: opt.headers || {}, body: opt.body ? JSON.parse(opt.body) : null });
   const J = (o, s = 200) => new Response(JSON.stringify(o), { status: s });
-  if (u.includes("/portfolio/orders") && method === "POST") return over.order || J({ order: { order_id: "o1", status: "executed", fill_count: 4 } });
+  if (u.includes("/portfolio/events/orders") && method === "POST") return over.order || J({ order_id: "o1", client_order_id: "x", fill_count: "4.00", remaining_count: "0.00", average_fill_price: "0.5800", average_fee_paid: "0.0171", ts_ms: 1 }, 201);
+  if (u.includes("/portfolio/orders") && method === "POST") return J({ error: { code: "deprecated_v1_order_endpoint" } }, 410);
   if (u.includes("/portfolio/balance")) return J({ balance: over.balance ?? 5000 });
-  if (u.includes("/portfolio/fills")) return J({ fills: [{ side: "yes", action: "buy", count: 4, yes_price: 58 }] });
+  if (u.includes("/portfolio/fills")) return J({ fills: [{ outcome_side: "yes", book_side: "bid", count_fp: "4.00", yes_price_dollars: "0.5800", no_price_dollars: "0.4200", fee_cost: "0.0700" }], cursor: "" });
   if (u.includes("/orderbook")) return J({ orderbook: { yes: [[55, 60]], no: [[43, 80]] } });
   if (u.includes("status=settled")) return J({ markets: [{ close_time: new Date((over.settledClose || cl) * 1000).toISOString(), result: over.result || "yes" }] });
   return J({ markets: [{ ticker: "KXBTC15M-T", close_time: new Date(cl * 1000).toISOString(), yes_bid_dollars: "0.5500", yes_ask_dollars: "0.5700" }] });
@@ -68,11 +90,13 @@ let [r, mem] = mk(liveEnv); calls = []; globalThis.fetch = kalshi();
 await r.checkpoints("BTC-USD", cl - 300);
 assert.equal(posts().length, 1, "one order");
 const p0 = posts()[0];
-assert.deepEqual([p0.body.ticker, p0.body.side, p0.body.action, p0.body.type, p0.body.yes_price, p0.body.time_in_force, p0.body.client_order_id],
-  ["KXBTC15M-T", "yes", "buy", "limit", 58, "immediate_or_cancel", `walls-${cl}-300`]);
-assert.equal(p0.body.count, Math.floor(2.5 / (0.58 + fee(0.58))), "10% of the $25 pot");
+assert(p0.u.endsWith("/trade-api/v2/portfolio/events/orders"), "V2 create-order endpoint");
+assert.deepEqual([p0.body.ticker, p0.body.side, p0.body.price, p0.body.time_in_force, p0.body.self_trade_prevention_type, p0.body.client_order_id],
+  ["KXBTC15M-T", "bid", "0.5800", "immediate_or_cancel", "taker_at_cross", `walls-${cl}-300`]);
+assert.equal(p0.body.action, undefined); assert.equal(p0.body.yes_price, undefined);
+assert.equal(p0.body.count, String(Math.floor(2.5 / (0.58 + fee(0.58)))), "10% of the $25 pot, as a count string");
 assert.equal(p0.headers["KALSHI-ACCESS-KEY"], "trade-key-id", "signed with the trading key, not the feed key");
-let st = mem.get("live"); assert.equal(st.orders.length, 1); assert.equal(st.orders[0].filled, 4);
+let st = mem.get("live"); assert.equal(st.orders.length, 1); assert.equal(st.orders[0].filled, 4); assert.equal(st.orders[0].status, "filled"); assert.equal(st.orders[0].avg, 0.58);
 
 await r.checkpoints("BTC-USD", cl - 180);
 assert.equal(posts().length, 1, "no second order in the same window");
@@ -103,7 +127,7 @@ await r.checkpoints("BTC-USD", cl - 300); assert.equal(posts().length, 0); asser
 
 // Kalshi balance below the stake: sizes down to what the account holds
 [r, mem] = mk(liveEnv); calls = []; globalThis.fetch = kalshi({ balance: 70 });
-await r.checkpoints("BTC-USD", cl - 300); assert.equal(posts()[0].body.count, 1, "$0.70 in the account buys one contract");
+await r.checkpoints("BTC-USD", cl - 300); assert.equal(posts()[0].body.count, "1", "$0.70 in the account buys one contract");
 
 // rejected order: recorded as an error, no exposure, no retry in that window
 [r, mem] = mk(liveEnv); calls = []; globalThis.fetch = kalshi({ order: new Response('{"error":"bad"}', { status: 400 }) });
@@ -135,7 +159,7 @@ M._setLiveRetryMs(0);
   // order: first attempt 429, retry succeeds -> exactly one placed order recorded, same client_order_id both times
   let [rq, mq] = mk(liveEnv); calls = []; let n = 0;
   const base = kalshi();
-  globalThis.fetch = async (url, opt = {}) => (String(url).includes("/portfolio/orders") && (opt.method === "POST") && n++ === 0)
+  globalThis.fetch = async (url, opt = {}) => (String(url).includes("/portfolio/events/orders") && (opt.method === "POST") && n++ === 0)
     ? (calls.push({ u: String(url), method: "POST", headers: opt.headers, body: JSON.parse(opt.body) }), new Response('{"error":{"code":"too_many_requests"}}', { status: 429 }))
     : base(url, opt);
   await rq.checkpoints("BTC-USD", cl - 300);

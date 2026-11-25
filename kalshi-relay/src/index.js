@@ -213,13 +213,13 @@ export class Relay extends DurableObject {
     let balance = null; try { balance = await this.liveBalance(); } catch (e) { st.lastErr = "balance: " + String(e.message || e).slice(0, 160); }
     const count = liveSize(acct.equity, Math.min(acct.available, balance == null ? 0 : balance), d, cfg.maxStake);
     if (count < 1) { st.lastSkip = balance == null ? "couldn't read the Kalshi balance" : "stake too small for one contract"; await this.ctx.storage.put("live", st); return; }
-    const cents = Math.round(d.price * 100), id = `walls-${close}-${T}`;
-    const o = { id, close, t: T, ticker: quote.ticker, side: d.side, limit: d.price, count, q: d.q, edge: d.edge, at: Math.floor(Date.now() / 1000), status: "sending" };
+    const id = `walls-${close}-${T}`, body = liveOrderBody(quote.ticker, id, d.side, d.price, count, quote.ranges);
+    const o = { id, close, t: T, ticker: quote.ticker, side: d.side, limit: body.limitOurSide, count, q: d.q, edge: d.edge, at: Math.floor(Date.now() / 1000), status: "sending" };
+    delete body.limitOurSide;
     st.orders.push(o); st.orders = st.orders.slice(-500); await this.ctx.storage.put("live", st);   // record before sending: no double orders
     try {
-      const res = await this.kalshiTrade("POST", "/trade-api/v2/portfolio/orders", { ticker: quote.ticker, client_order_id: id, type: "limit", action: "buy",
-        side: d.side, count, [d.side === "yes" ? "yes_price" : "no_price"]: cents, time_in_force: "immediate_or_cancel" });
-      const od = res.order || res; o.orderId = od.order_id || null; o.status = od.status || "sent"; o.filled = parseFilled(od, count);
+      const res = await this.kalshiTrade("POST", "/trade-api/v2/portfolio/events/orders", body);
+      Object.assign(o, liveOrderResult(res, d.side));
     } catch (e) { o.status = "error"; o.error = String(e.message || e).slice(0, 200); o.filled = 0; st.lastErr = o.error; }
     await this.ctx.storage.put("live", st);
   }
@@ -229,7 +229,7 @@ export class Relay extends DurableObject {
     const done = new Map(); for (const m of await this.settled("KXBTC15M", 100)) { const res = String(m.result || "").toLowerCase(); if (res === "yes" || res === "no") done.set(Math.round(Date.parse(m.close_time) / 1000), res === "yes" ? "up" : "down"); }
     for (const o of due) {
       if (!done.has(o.close)) continue;
-      try { const f = parseFills(await this.kalshiTrade("GET", `/trade-api/v2/portfolio/fills?ticker=${encodeURIComponent(o.ticker)}`), o.side); if (f) { o.filled = f.count; o.avg = f.avg; } } catch (e) { o.fillErr = String(e.message || e).slice(0, 120); }
+      try { const f = parseFills(await this.kalshiTrade("GET", `/trade-api/v2/portfolio/fills?ticker=${encodeURIComponent(o.ticker)}`), o.side); if (f) { o.filled = f.count; o.avg = f.avg; if (f.fee != null) o.feeTotal = f.fee; } } catch (e) { o.fillErr = String(e.message || e).slice(0, 120); }
       o.out = done.get(o.close); Object.assign(o, liveResult(o));
     }
     await this.ctx.storage.put("live", st);
@@ -264,7 +264,7 @@ export class Relay extends DurableObject {
       r = await fetch(url, { headers: { accept: "application/json", ...(await kalshiHeaders(this.env.KALSHI_KEY_ID, this.env.KALSHI_PRIVATE_KEY, "GET", path)) } });
     if (!r.ok) throw new Error(`Kalshi orderbook HTTP ${r.status}`);
     const q = quoteFromBook(await r.json()); if (!q) return null;
-    q.ms = Date.now() - t0; q.ticker = m.ticker; return q;
+    q.ms = Date.now() - t0; q.ticker = m.ticker; q.ranges = Array.isArray(m.price_ranges) ? m.price_ranges : null; return q;
   }
   // ---- paper trading (BTC only, no real money): what a bot following the model would have done, with Kalshi fees.
   async paperBet(close, T, q, quote, audit = {}) {
@@ -360,7 +360,7 @@ export class Relay extends DurableObject {
       const ages = {};
       for (const [id, m] of this.last) ages[id] = Math.round((Date.now() - m.ts) / 1000) + "s ago";
       const subs = await this.getSubs();
-      return json({ upstream: this.upState, error: this.upError || undefined, latest: ages, apps: this.ctx.getWebSockets().length,
+      return json({ version: RELAY_VERSION, upstream: this.upState, error: this.upError || undefined, latest: ages, apps: this.ctx.getWebSockets().length,
         pushDevices: subs.size, signals: this.sigErr ? { error: this.sigErr } : Object.fromEntries([...this.sigState].map(([k, v]) => [k, v.ema != null ? Math.round(v.ema * 100) + "% buyers" : "–"])) });
     }
     if (url.pathname === "/vapid") return json({ key: (await this.vapid()).pub });
@@ -549,6 +549,7 @@ function lastTrade(j) {
   return best;
 }
 let LIVE_RETRY_MS = 1000;
+const RELAY_VERSION = "2026-11-25.v2orders";   // shown on /status; bump on relay changes
 export function _setLiveRetryMs(ms) { LIVE_RETRY_MS = ms; }   // tests only
 // Kalshi order book -> Yes quote. The book lists bids only: best Yes ask = 1 - best No bid. Dollar or cent fields.
 function quoteFromBook(j) {
@@ -628,9 +629,9 @@ function bookRatio(bids, asks, mid, band) {
 const KRAKEN_PAIR = { "BTC-USD": "XBTUSD", "ETH-USD": "ETHUSD", "SOL-USD": "SOLUSD", "XRP-USD": "XRPUSD", "DOGE-USD": "XDGUSD" };
 const cbBackoff = { until: 0 };
 // ---- live trading maths (pure, tested offline)
-function liveResult(o) {             // P&L of a settled order: filled contracts at the average (or limit) price, Kalshi fee estimate
+function liveResult(o) {             // P&L of a settled order: filled contracts at the average (or limit) price; Kalshi's fee if known
   const n = o.filled || 0, px = o.avg != null ? o.avg : o.limit, won = (o.side === "yes") === (o.out === "up");
-  const fee = n ? Math.ceil(kalshiFee(px) * n * 100) / 100 : 0;
+  const fee = !n ? 0 : o.feeTotal != null ? o.feeTotal : o.feeEach != null ? o.feeEach * n : Math.ceil(kalshiFee(px) * n * 100) / 100;
   return { won, fee: +fee.toFixed(2), pnl: n ? +((won ? n * (1 - px) : -n * px) - fee).toFixed(2) : 0 };
 }
 function liveAccount(st, cfg) {      // the bot's own $ pot: budget + settled P&L; open orders are tied up
@@ -663,17 +664,41 @@ function parseFilled(od, count) {
   if (rem != null) return Math.max(0, init - rem);
   return String(od.status || "") === "executed" ? count : 0;
 }
-function parseFills(j, side) {       // our buys on one side of one market: total contracts and average price (dollars)
-  let n = 0, cost = 0;
+function parseFills(j, side) {       // fills that put us long `side` ("yes"/"no") in one market: contracts, average price, fees
+  let n = 0, cost = 0, fee = 0, anyFee = false;
   for (const f of (j.fills || [])) {
-    if (String(f.action || "buy") !== "buy" || String(f.side || "") !== side) continue;
-    const c = num(f.count ?? f.count_fp); const pd = num(side === "yes" ? f.yes_price_dollars ?? f.yes_price_fixed : f.no_price_dollars ?? f.no_price_fixed);
+    let dir = f.outcome_side || (f.book_side ? (f.book_side === "bid" ? "yes" : "no") : null);
+    if (!dir && f.side) dir = String(f.action || "buy") === "buy" ? f.side : (f.side === "yes" ? "no" : "yes");     // legacy fields
+    if (dir !== side) continue;
+    const c = num(f.count_fp ?? f.count); const pd = num(side === "yes" ? f.yes_price_dollars ?? f.yes_price_fixed : f.no_price_dollars ?? f.no_price_fixed);
     const pc = num(side === "yes" ? f.yes_price : f.no_price); const p = pd != null ? pd : pc != null ? pc / 100 : null;
     if (c == null || p == null) continue; n += c; cost += c * p;
+    const fc = num(f.fee_cost); if (fc != null) { fee += fc; anyFee = true; }
   }
-  return n ? { count: n, avg: +(cost / n).toFixed(4) } : null;
+  return n ? { count: n, avg: +(cost / n).toFixed(4), fee: anyFee ? +fee.toFixed(4) : null } : null;
 }
-export { lastTrade, yesFromMarket, quoteFromBook, paperDecide, paperSim, paperBreakdown, paperDaily, liveResult, liveAccount, liveGate, liveSize, parseBalance, parseFilled, parseFills };
+// Kalshi's price grid (market.price_ranges); default = this series' tapered grid: 0.1c below 10c and above 90c, 1c between.
+const DEFAULT_RANGES = [{ start: "0.0000", end: "0.1000", step: "0.0010" }, { start: "0.1000", end: "0.9000", step: "0.0100" }, { start: "0.9000", end: "1.0000", step: "0.0010" }];
+function snapPrice(p, ranges, dir) {  // nearest valid price at or below (dir "down") or at or above ("up") p, kept inside (0, 1)
+  const rs = (ranges && ranges.length ? ranges : DEFAULT_RANGES).map(r => ({ a: num(r.start), b: num(r.end), st: num(r.step) })).filter(r => r.a != null && r.b != null && r.st > 0);
+  const r = rs.find(x => p >= x.a - 1e-9 && p <= x.b + 1e-9) || rs[0]; if (!r) return p;
+  const k = (p - r.a) / r.st, n = dir === "up" ? Math.ceil(k - 1e-9) : Math.floor(k + 1e-9);
+  let v = +(r.a + n * r.st).toFixed(4);
+  const lo = rs.length ? Math.min(...rs.map(x => x.st)) : 0.001;
+  return Math.min(1 - lo, Math.max(lo, v));
+}
+// V2 order body. Our side's limit (max we pay per contract) is converted to the YES book and snapped so we never pay more.
+function liveOrderBody(ticker, id, side, limit, count, ranges) {
+  const yesPx = side === "yes" ? snapPrice(limit, ranges, "down") : snapPrice(1 - limit, ranges, "up");
+  return { ticker, client_order_id: id, side: side === "yes" ? "bid" : "ask", count: String(count), price: yesPx.toFixed(4),
+    time_in_force: "immediate_or_cancel", self_trade_prevention_type: "taker_at_cross", limitOurSide: +(side === "yes" ? yesPx : 1 - yesPx).toFixed(4) };
+}
+function liveOrderResult(res, side) { // V2 create-order response -> our order record (prices on our side)
+  const filled = num(res.fill_count) ?? 0, rem = num(res.remaining_count), avgYes = num(res.average_fill_price), fee = num(res.average_fee_paid);
+  return { orderId: res.order_id || null, filled, status: filled > 0 ? (rem > 0 ? "partly filled" : "filled") : "not filled",
+    ...(avgYes != null && filled > 0 ? { avg: +(side === "yes" ? avgYes : 1 - avgYes).toFixed(4) } : {}), ...(fee != null && filled > 0 ? { feeEach: fee } : {}) };
+}
+export { lastTrade, yesFromMarket, quoteFromBook, paperDecide, paperSim, paperBreakdown, paperDaily, liveResult, liveAccount, liveGate, liveSize, parseBalance, parseFilled, parseFills, snapPrice, liveOrderBody, liveOrderResult };
 export async function fetchBook(coin) {
   if (Date.now() >= cbBackoff.until) {
     try {
