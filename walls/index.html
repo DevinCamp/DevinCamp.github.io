@@ -197,7 +197,7 @@
     #gear { display: block; order: -1; }
     .controls { display: none; }
     body.settings .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; position: fixed; z-index: 10;
-      left: 8px; right: 8px; top: calc(max(6px, env(safe-area-inset-top)) + 52px); margin: 0;
+      left: 8px; right: 8px; top: calc(max(6px, env(safe-area-inset-top) + 14px) + 52px); margin: 0;
       background: #151a22; border: 1px solid #2a3240; border-radius: 12px; padding: 14px; box-shadow: 0 12px 32px rgba(0,0,0,.5); }
     body.settings .controls label { font-size: 12px; flex-direction: column; align-items: stretch; gap: 4px; }
     body.settings .controls label:has(input[type=checkbox]) { flex-direction: row; align-items: center; font-size: 14px; color: var(--text); }
@@ -213,7 +213,7 @@
   }
   /* portrait phone: header wraps into clear rows (landscape keeps the single scrolling strip) */
   @media (max-width: 700px) and (min-height: 501px) {
-    header { flex-wrap: wrap; overflow: visible; gap: 8px 10px; padding: 8px 12px; padding-top: max(8px, env(safe-area-inset-top)); }
+    header { flex-wrap: wrap; overflow: visible; gap: 8px 10px; padding: 8px 12px; padding-top: max(8px, calc(env(safe-area-inset-top) + 14px)); }
     header > .kcard { order: 5; flex: 1 1 100%; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px 0; padding: 8px 0; }
     .kcard .stat { padding: 0 12px; min-width: 0; }
     .kcard .stat span { font-size: 13px; white-space: nowrap; }
@@ -1417,7 +1417,7 @@ function renderTrade(q) {
     btn.disabled = !can || !px || n < 1;
     btn.classList.toggle("armed", MQ.armed === side);
     setTxt(id + "Px", px ? Math.round(px * 100) + "¢" : "—");
-    setTxt(id + "Sub", MQ.armed === side ? `Tap again to buy ${n} for ~$${(n * (px + 0.07 * px * (1 - px))).toFixed(2)}` : px ? `${n} shares · wins $${n}` : "");
+    setTxt(id + "Sub", MQ.armed === side ? `Tap again to buy ${n} for ~$${(n * (px + 0.07 * px * (1 - px))).toFixed(2)}` : px ? `${n} ${n === 1 ? "share" : "shares"} · wins $${n}` : "");
   }
   const m = MQ.manual;
   setTxt("tToday", m ? `Today $${(m.spentToday || 0).toFixed(2)}/$${m.dailyMax}` + (m.bets ? ` · P&L ${m.realized >= 0 ? "+" : "−"}$${Math.abs(m.realized).toFixed(2)}` : "") : "");
