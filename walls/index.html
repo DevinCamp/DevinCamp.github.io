@@ -137,6 +137,43 @@
   .cpt td { text-align: right; padding: 3px 10px 3px 0; border-top: 1px solid var(--line); }
   .cpt th:first-child, .cpt td:first-child { text-align: left; }
   .cpt.cmp td, .cpt.cmp th { white-space: nowrap; font-size: 11px; padding-right: 8px; }
+  /* ---------- round panel + trade bar (Kalshi mode) ---------- */
+  body.kalshi .kcard { display: none; }
+  #round { padding: 10px 18px 8px; border-bottom: 1px solid var(--line); background: var(--bg); font-variant-numeric: tabular-nums; }
+  #round .rtop { display: flex; align-items: flex-end; gap: 12px; }
+  #round .rhead { flex: 1; min-width: 0; }
+  #round .rhead small, #round .rclock small { color: var(--muted); font-size: 11px; display: block; }
+  #round .rline { font: 700 30px/1.1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: -.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #round .rclock { text-align: right; }
+  #round .rclock span { font: 700 30px/1.1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  #round .rclock.soon span { color: var(--gold); }
+  #round .rrow { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-top: 6px; font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); }
+  #round .rrow b { color: var(--text); font-weight: 600; }
+  #round .rrow b.up { color: var(--up); } #round .rrow b.down { color: var(--down); }
+  #round .rpx { margin-left: auto; }
+  #round .rrow2 { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+  #round .rlast { background: none; border: 0; padding: 0; display: flex; align-items: center; gap: 8px; font-size: 12px; }
+  .sq { display: inline-flex; gap: 3px; }
+  .sq i { width: 11px; height: 11px; border-radius: 2px; display: inline-block; }
+  .sq i.u { background: var(--up); } .sq i.d { background: var(--down); }
+  #rZoom { font-size: 12px; padding: 4px 10px; }
+  #tradeBar { padding: 10px 18px 12px; border-top: 1px solid var(--line); background: var(--panel); }
+  #tradeBar[hidden] { display: none !important; }
+  .tspend { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .chips { display: inline-flex; gap: 6px; }
+  .chips button { padding: 4px 10px; border-radius: 999px; font-size: 13px; }
+  .chips button.on { background: #24304a; border-color: #3b5bdb; color: #fff; }
+  .tbtns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; max-width: 760px; }
+  .buy { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 10px 8px; border-radius: 12px; font-variant-numeric: tabular-nums; }
+  .buy small { font-size: 12px; font-weight: 700; letter-spacing: .04em; }
+  .buy b { font: 700 26px/1.1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .buy span { font-size: 11px; color: var(--muted); }
+  .buy.bup { background: #0f2a22; border-color: #1e5a45; color: var(--up); }
+  .buy.bdown { background: #2c1219; border-color: #6a2333; color: var(--down); }
+  .buy.armed { outline: 2px solid currentColor; outline-offset: 2px; }
+  .buy:disabled { opacity: .45; cursor: not-allowed; }
+  .tmsg { margin-top: 8px; font-size: 12px; min-height: 16px; }
+  .tmsg.ok { color: var(--up); } .tmsg.bad { color: var(--down); }
   /* ---------- phones (portrait or landscape) ---------- */
   @media (max-width: 700px), (max-height: 500px) {
     header { position: relative; flex-wrap: nowrap; gap: 12px; padding: 6px 10px;
@@ -183,6 +220,14 @@
     .price { font-size: 21px; }
     header { gap: 8px 8px; }
   }
+  @media (max-width: 700px) and (min-height: 501px) {
+    #round { padding: 8px 12px 6px; }
+    #round .rline { font-size: 22px; } #round .rclock span { font-size: 22px; }
+    #round .rrow { font-size: 11.5px; gap: 2px 12px; } #round .rpx { margin-left: 0; }
+    #tradeBar { padding: 8px 12px 10px; } .buy b { font-size: 22px; } .buy { padding: 8px 6px; }
+    body.kalshi #walls { display: none; }
+  }
+  @media (max-height: 500px) { #round .rrow, #round .rrow2, #tradeBar .tmsg { display: none; } }
   /* phone on its side: give the chart all the height */
   @media (max-height: 500px) {
     header { padding-top: 4px; padding-bottom: 4px; }
@@ -247,8 +292,28 @@
     <button id="relayBtn" type="button">Kalshi official feed…</button>
   </div>
 </header>
+<section id="round" class="kal">
+  <div class="rtop">
+    <div class="rhead"><small id="rLbl">BTC · 15 min</small><div id="rLine" class="rline">—</div></div>
+    <div class="rclock"><span id="rCd">—</span><small>left in round</small></div>
+  </div>
+  <div class="rrow">
+    <span>To beat <b id="rTgt">—</b></span><span>Now <b id="rNow">—</b></span><span>Odds <b id="rOdds">—</b></span>
+    <span class="rpx">Up <b id="rUp" class="up">—</b> · Down <b id="rDown" class="down">—</b></span>
+  </div>
+  <div class="rrow2"><button type="button" id="rLastBtn" class="rlast" title="Past 15-minute results"><span class="hint">Last</span> <span id="rLast" class="sq"></span></button>
+    <span style="flex:1"></span><button type="button" id="rZoom">This round</button></div>
+</section>
 <div id="wrap"><canvas id="cv"></canvas><div id="tip"></div>
   <div id="help">Scroll = zoom time · Shift+scroll or scroll on price axis = zoom price · Drag = pan · Drag order-book edge = resize · Double-click = reset</div></div>
+<section id="tradeBar" class="kal" hidden>
+  <div class="tspend"><span class="hint">Spend</span><span id="tChips" class="chips"></span><span style="flex:1"></span><span id="tToday" class="hint"></span></div>
+  <div class="tbtns">
+    <button type="button" id="buyUp" class="buy bup"><small>BUY ▲ UP</small><b id="buyUpPx">—</b><span id="buyUpSub"></span></button>
+    <button type="button" id="buyDown" class="buy bdown"><small>BUY ▼ DOWN</small><b id="buyDownPx">—</b><span id="buyDownSub"></span></button>
+  </div>
+  <div id="tMsg" class="tmsg hint">Each contract pays $1 if its side wins. Tap a button twice to buy.</div>
+</section>
 <div id="walls"><span class="hint">Connecting to Coinbase…</span></div>
 <div id="resDlg" class="modal" hidden>
   <div class="dlg wide">
@@ -1287,6 +1352,95 @@ function frame(dt) {
 }
 
 // ---- header + wall list (5x/sec, so text doesn't flicker)
+// ---- round panel + app buys (Kalshi mode). Prices come from the relay's live Kalshi order book; buys go through the relay.
+const MQ = { q: null, at: 0, err: "", spend: 5, armed: null, armT: 0, busy: false, manual: null, manualAt: 0 };
+try { const v = +localStorage.getItem("walls.spend"); if (v > 0) MQ.spend = v; } catch {}
+const SPEND_CHIPS = [1, 2, 5, 10];
+async function relayGet(path) {
+  const r = await fetch(`${relayBase()}${path}`, { headers: { authorization: "Bearer " + OFF.code } });
+  const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || "HTTP " + r.status); return j;
+}
+async function pollQuote() {
+  if (S.src !== "kalshi" || !relayBase() || !OFF.code || document.visibilityState !== "visible") return;
+  try { const q = await relayGet(`/quote?coin=${encodeURIComponent(S.product)}`); if (q.error && q.up == null) MQ.err = q.error; else { MQ.q = { ...q, coin: S.product }; MQ.at = Date.now(); MQ.err = ""; } }
+  catch (err) { MQ.err = /404|Not Found/.test(err.message) ? "Your relay needs the latest update." : err.message; }
+  if (!MQ.manual || Date.now() - MQ.manualAt > 30000) loadManual();
+}
+async function loadManual() { MQ.manualAt = Date.now(); try { MQ.manual = await relayGet("/manual"); } catch {} }
+function quoteNow() {     // the current round's quote, or null when stale / for another coin or round
+  const q = MQ.q, k = S.kw; if (!q || q.coin !== S.product || Date.now() - MQ.at > 10000 || (k && q.close !== k.close15)) return null; return q;
+}
+function shares(spend, px) { const c = px + 0.07 * px * (1 - px); return px > 0 && px < 1 ? Math.floor(spend / c) : 0; }
+const setTxt = (id, v) => { const e = $(id); if (e && e.textContent !== v) e.textContent = v; };
+function renderRound(kw, oddsPc) {
+  if (S.src !== "kalshi") return;
+  const sym = base(), tgt = kw.target, now = S.last, cd = kw.close15 - kw.now;
+  setTxt("rLbl", `${sym} · 15 min round`);
+  const line = $("rLine");
+  if (tgt && now) { const d = now - tgt, txt = `${d >= 0 ? "+" : "−"}$${fmtP(Math.abs(d))} ${d >= 0 ? "above" : "below"} the line`;
+    if (line.textContent !== txt) line.textContent = txt; line.className = "rline " + (d >= 0 ? "up" : "down"); }
+  else setTxt("rLine", "waiting for target…");
+  const mm = Math.max(0, Math.floor(cd)); setTxt("rCd", `${Math.floor(mm / 60)}:${String(mm % 60).padStart(2, "0")}`);
+  $("rCd").parentElement.classList.toggle("soon", cd < 60);
+  setTxt("rTgt", tgt ? "$" + fmtP(tgt) : "—"); setTxt("rNow", now ? "$" + fmtP(now) : "—");
+  setTxt("rOdds", oddsPc == null ? "—" : oddsPc >= 0.5 ? `▲ ${Math.round(oddsPc * 100)}%` : `▼ ${Math.round((1 - oddsPc) * 100)}%`);
+  $("rOdds").className = oddsPc == null ? "" : oddsPc >= 0.5 ? "up" : "down";
+  const q = quoteNow(), c = x => x == null ? "—" : (Math.round(x * 1000) / 10).toFixed(x < 0.1 || x > 0.9 ? 1 : 0) + "¢";
+  setTxt("rUp", q ? c(q.up) : "—"); setTxt("rDown", q ? c(q.down) : "—");
+  const last = (RES.coin === S.product ? RES.rows : []).slice(0, 12).reverse();
+  const sq = last.map(r => `<i class="${r.outcome === "up" ? "u" : "d"}" title="${r.outcome}"></i>`).join("");
+  if ($("rLast").innerHTML !== sq) $("rLast").innerHTML = sq || '<span class="hint">—</span>';
+  renderTrade(q);
+}
+function renderTrade(q) {
+  const bar = $("tradeBar"), show = S.src === "kalshi" && !!relayBase() && !!OFF.code;
+  if (bar.hidden === show) bar.hidden = !show;
+  if (!show) return;
+  const max = q && q.maxSpend ? q.maxSpend : 10, chips = SPEND_CHIPS.filter(v => v <= max);
+  if (MQ.spend > max) MQ.spend = max;
+  const ch = chips.map(v => `<button type="button" data-spend="${v}" class="${v === MQ.spend ? "on" : ""}">$${v}</button>`).join("");
+  if ($("tChips").innerHTML !== ch) $("tChips").innerHTML = ch;
+  const can = !!(q && q.canTrade) && !MQ.busy;
+  if (MQ.armed && Date.now() - MQ.armT > 4000) MQ.armed = null;
+  for (const [side, id, px] of [["yes", "buyUp", q && q.up], ["no", "buyDown", q && q.down]]) {
+    const btn = $(id), n = px ? shares(MQ.spend, px) : 0;
+    btn.disabled = !can || !px || n < 1;
+    btn.classList.toggle("armed", MQ.armed === side);
+    setTxt(id + "Px", px ? Math.round(px * 100) + "¢" : "—");
+    setTxt(id + "Sub", MQ.armed === side ? `Tap again to buy ${n} for ~$${(n * (px + 0.07 * px * (1 - px))).toFixed(2)}` : px ? `${n} shares · wins $${n}` : "");
+  }
+  const m = MQ.manual;
+  setTxt("tToday", m ? `Today $${(m.spentToday || 0).toFixed(2)} of $${m.dailyMax}` + (m.bets ? ` · P&L ${m.realized >= 0 ? "+" : "−"}$${Math.abs(m.realized).toFixed(2)}` : "") : "");
+  if (q && !q.canTrade && !MQ.busy && $("tMsg").dataset.k !== "nokey") { $("tMsg").dataset.k = "nokey"; tMsg("Prices are live. To buy from here, set the trading key in Cloudflare.", ""); }
+}
+function tMsg(text, cls) { const e = $("tMsg"); e.textContent = text; e.className = "tmsg hint" + (cls ? " " + cls : ""); }
+async function buyTap(side) {
+  const q = quoteNow(); if (!q || MQ.busy) return;
+  const px = side === "yes" ? q.up : q.down;
+  if (MQ.armed !== side) { MQ.armed = side; MQ.armT = Date.now(); renderTrade(q); return; }
+  MQ.armed = null; MQ.busy = true; $("tMsg").dataset.k = ""; tMsg(`Buying ${side === "yes" ? "UP" : "DOWN"}…`, ""); renderTrade(q);
+  try {
+    const r = await fetch(`${relayBase()}/trade`, { method: "POST", headers: { authorization: "Bearer " + OFF.code, "content-type": "application/json" },
+      body: JSON.stringify({ coin: S.product, side, spend: MQ.spend, price: px, close: q.close }) });
+    const j = await r.json().catch(() => ({}));
+    if (j.ok && j.order) { const o = j.order, n = o.filled || 0;
+      tMsg(n > 0 ? `Bought ${n} ${side === "yes" ? "UP" : "DOWN"} at ${Math.round((o.avg ?? o.limit) * 100)}¢.` : "Not filled: no one was selling at that price. Nothing was spent.", n > 0 ? "ok" : ""); }
+    else tMsg(j.error || "The relay didn't accept that (HTTP " + r.status + ").", "bad");
+  } catch (err) { tMsg("Couldn't reach the relay: " + err.message, "bad"); }
+  MQ.busy = false; loadManual().then(() => renderTrade(quoteNow())); pollQuote();
+}
+$("buyUp").onclick = () => buyTap("yes");
+$("buyDown").onclick = () => buyTap("no");
+$("tChips").onclick = e => { const b = e.target.closest("[data-spend]"); if (!b) return; MQ.spend = +b.dataset.spend; MQ.armed = null; try { localStorage.setItem("walls.spend", String(MQ.spend)); } catch {} renderTrade(quoteNow()); };
+$("rLastBtn").onclick = () => openResults();
+$("rZoom").onclick = () => {        // fit the current 15-minute round: 10 s candles, the whole window, the target line in view
+  if (S.tf !== 10) { $("tf").value = "10"; $("tf").dispatchEvent(new Event("change")); }
+  const chartW = Math.max(100, W - AXIS_W - DEPTH_W);
+  S.v.offT = 0; S.v.cwT = clamp(chartW / 95, 2, 36);
+  const k = S.kw, d = k && k.target && S.last ? Math.abs(S.last - k.target) : 0;
+  if (S.last) { S.v.rangeT = clamp(Math.max(d * 1.6, S.last * 0.0006) / S.last, 0.0008, 0.12); $("range").value = ""; }
+};
+setInterval(pollQuote, 2000);
 function updateHeader() {
   if (!S.last || !S.calc) return;
   const C = S.calc, c = S.candles.at(-1);
@@ -1307,8 +1461,10 @@ function updateHeader() {
     if (od._s !== sec) {
       od._s = sec;
       const sm = IX.sec.length > 120 ? settleModel(IX.sec.slice(-1000).map(x => [x.t, x.v]), kw.close15, kw.now, ((SIG.ema != null ? SIG.ema : 0.5) - 0.5) * 2) : null;
+      od._pc = sm ? sm.pc : null;
       od.innerHTML = sm ? (sm.pc >= 0.5 ? `<span class="up">▲ ${Math.round(sm.pc * 100)}%</span>` : `<span class="down">▼ ${Math.round((1 - sm.pc) * 100)}%</span>`) : "—";
     }
+    renderRound(kw, od._pc);
     const left15 = kw.close15 - kw.now, leftH = kw.closeH - kw.now;
     $("kCd").textContent = `${mmss(left15)}  ·  1h ${mmss(leftH)}`;
     $("kCdLbl").textContent = "15-min · hourly close in";

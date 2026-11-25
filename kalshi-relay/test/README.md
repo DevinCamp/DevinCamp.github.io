@@ -8,3 +8,4 @@
     node test/yes.test.mjs    # Kalshi Yes price parsing
     node test/paper.test.mjs  # paper trading: bet decision, sizing, replay
     node test/live.test.mjs   # live trading: sizing, safety gates, signed orders, settlement, stop/resume (mocked Kalshi)
+    node test/manual.test.mjs # app quote + BUY UP/DOWN: caps, price guard, shard balance, settlement (mocked Kalshi)
