@@ -136,7 +136,8 @@ export class Relay extends DurableObject {
     if (!bq || bq.bid == null || bq.ask == null) { st.bookFail++; if (err) st.lastErr = err.slice(0, 160); await this.ctx.storage.put("paperstat3", st); return; }
     st.book++; if (bq.bidSize != null && bq.askSize != null) st.sized++;
     if (listQ && listQ.yes != null) { const d = Math.abs(listQ.yes - bq.yes); st.diffN++; st.diffSum = +(st.diffSum + d).toFixed(4); if (d > 0.05) st.diff5++;
-      st.lastCmp = { at: Math.floor(Date.now() / 1000), t: T, list: [listQ.bid, listQ.ask], book: [bq.bid, bq.ask], bookSize: [bq.bidSize, bq.askSize] }; }
+      st.lastCmp = { at: Math.floor(Date.now() / 1000), t: T, list: [listQ.bid, listQ.ask], book: [bq.bid, bq.ask], bookSize: [bq.bidSize, bq.askSize] };
+      st.cmps = [...(st.cmps || []), st.lastCmp].slice(-5); }
     const pts = this.hist.get("BRTI") || [], ixAge = pts.length ? Date.now() / 1000 - pts[pts.length - 1][0] : 1e9;
     let skip = null;
     if (Date.now() - this.bootAt < PAPER_WARMUP_MS) { st.warmup++; skip = "warmup"; }

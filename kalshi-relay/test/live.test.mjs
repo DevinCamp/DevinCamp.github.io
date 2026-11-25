@@ -163,5 +163,11 @@ M._setLiveRetryMs(0);
 {
   const [rc, mc] = mk({}); globalThis.fetch = kalshi(); await rc.checkpoints("BTC-USD", cl - 300);
   const lc = mc.get("paperstat3").lastCmp; assert.deepEqual([lc.t, lc.list, lc.book, lc.bookSize], [300, [0.55, 0.57], [0.55, 0.57], [60, 80]]);
+  assert.equal(mc.get("paperstat3").cmps.length, 1);
+  const [rk, mk2] = mk({}); const seed = Array.from({ length: 8 }, (_, i) => ({ at: i, t: 300, list: [0, 0], book: [0, 0] }));
+  mk2.set("paperstat3", { cps: 8, book: 8, bookFail: 0, stale: 0, warmup: 0, sized: 8, diffN: 8, diffSum: 0, diff5: 0, cmps: seed });
+  globalThis.fetch = kalshi(); await rk.checkpoints("BTC-USD", cl - 300);
+  const kept = mk2.get("paperstat3").cmps; assert.equal(kept.length, 5, "keeps only the last 5"); assert.deepEqual(kept[4].book, [0.55, 0.57], "newest last");
+
 }
 console.log("live rate-limit tests passed");

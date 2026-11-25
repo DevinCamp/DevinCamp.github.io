@@ -132,6 +132,7 @@
   .cpt th { color: var(--muted); font-weight: 500; text-align: right; padding: 3px 10px 3px 0; font-size: 10.5px; }
   .cpt td { text-align: right; padding: 3px 10px 3px 0; border-top: 1px solid var(--line); }
   .cpt th:first-child, .cpt td:first-child { text-align: left; }
+  .cpt.cmp td, .cpt.cmp th { white-space: nowrap; font-size: 11px; padding-right: 8px; }
   /* ---------- phones (portrait or landscape) ---------- */
   @media (max-width: 700px), (max-height: 500px) {
     header { position: relative; flex-wrap: nowrap; gap: 12px; padding: 6px 10px;
@@ -789,8 +790,13 @@ function paperHtml() {
     (st.sized < st.book ? ` · <b class="down">book sizes missing (assuming ${A.depth} contracts)</b>` : "") +
     ((P.settled || 0) < 300 ? ` · <b>${P.settled || 0} of 300+ bets needed before trusting any result</b>` : "");
   const lag = st.diffN ? `<div>Market-list price vs live order book: off by ${(st.diffSum / st.diffN * 100).toFixed(1)}¢ on average, more than 5¢ apart ${Math.round(st.diff5 / st.diffN * 100)}% of the time.</div>` : "";
-  const lc = st.lastCmp, ct = x => x == null ? "—" : Math.round(x * 100) + "¢";
-  const lagLast = lc ? `<div style="font-size:11px">Last comparison (${lc.t / 60} min before a close): market list bid ${ct(lc.list[0])} / ask ${ct(lc.list[1])} · live book bid ${ct(lc.book[0])} / ask ${ct(lc.book[1])}${lc.bookSize ? ` (${lc.bookSize[0] ?? "?"} / ${lc.bookSize[1] ?? "?"} contracts)` : ""}</div>` : "";
+  // recent raw quotes, newest first, to a tenth of a cent (Kalshi quotes sub-cent near 0 and 100)
+  const ct = x => x == null ? "—" : (Math.round(x * 1000) / 10).toFixed(1) + "¢", qty = x => x == null ? "?" : Math.round(x).toLocaleString("en-US");
+  const tfc = new Intl.DateTimeFormat([], { hour: "numeric", minute: "2-digit" });
+  const cmps = (st.cmps && st.cmps.length ? st.cmps : st.lastCmp ? [st.lastCmp] : []).slice().reverse();
+  const lagLast = cmps.length ? `<table class="cpt cmp"><thead><tr><th>Recent quotes</th><th>List bid/ask</th><th>Book bid/ask</th><th>Size</th></tr></thead><tbody>` +
+    cmps.map(c => `<tr><td>${c.at ? tfc.format(new Date(c.at * 1000)) + ", " : ""}${c.t / 60}m</td><td>${ct(c.list[0])}/${ct(c.list[1])}</td><td>${ct(c.book[0])}/${ct(c.book[1])}</td><td>${c.bookSize ? qty(c.bookSize[0]) + " / " + qty(c.bookSize[1]) : "—"}</td></tr>`).join("") +
+    `</tbody></table>` : "";
   const prev = P.prev && P.prev.bets ? `<div style="font-size:11px">Previous record (market-list prices, now retired): ${P.prev.bets} bets, ${usd(P.prev.pnl)} at $${A.flat} flat stakes.</div>` : "";
   return `<div style="margin-top:10px"><b style="color:var(--text)">Paper trading · BTC · no real money · model only</b>` +
     (P.sims || []).map(one).join("") + `<div style="margin-top:4px">${diag}</div>` + lag + lagLast + prev +
