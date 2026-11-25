@@ -2,7 +2,7 @@
 import fs from "fs"; import os from "os"; import path from "path"; import assert from "assert";
 const src = fs.readFileSync(new URL("../src/index.js", import.meta.url), "utf8").replace(/^import .*$/m, "class DurableObject {}");
 const f = path.join(os.tmpdir(), "relay_mod_paper.mjs"); fs.writeFileSync(f, src);
-const { paperDecide, paperSim, paperBreakdown, paperDaily, yesFromMarket, quoteFromBook, Relay } = await import(f);
+const { paperDecide, paperSim, paperBreakdown, paperDaily, yesFromMarket, quoteFromBook, lastTrade, Relay } = await import(f);
 
 // ---- decision
 assert.equal(paperDecide(0.5, 0.49, 0.51), null, "no edge, no bet");
@@ -85,6 +85,29 @@ assert.equal(mem2.get("paperstat3").stale, 1); assert.equal(mem2.get("paper3:BTC
 globalThis.fetch = async url => String(url).includes("/orderbook") ? new Response("{}", { status: 500 }) : new Response(JSON.stringify(listJson));
 await r2.checkpoints("BTC-USD", now);
 st = mem2.get("paperstat3"); assert.equal(st.bookFail, 1); assert(/500/.test(st.lastErr)); assert.equal(mem2.get("cp:BTC-USD").length, 1, "checkpoint still recorded");
+
+// ---- trades check: which quote matches Kalshi's most recent trade
+{
+  const iso = s => new Date(s * 1000).toISOString(), n0 = Date.now() / 1000;
+  assert.deepEqual(lastTrade({ trades: [{ created_time: iso(n0 - 50), yes_price: 40 }, { created_time: iso(n0 - 5), yes_price_dollars: "0.5600" }, { created_time: iso(n0 - 20), yes_price: 50 }] }), { yes: 0.56, at: Math.floor((n0 - 5) * 1000) / 1000 });
+  assert.equal(lastTrade({ trades: [] }), null);
+  const runWith = async tradesJson => {
+    const [rt, mt] = mkRelay(); rt.hist = new Map([["BRTI", pts]]); rt.bootAt = Date.now() - 3600e3;
+    globalThis.fetch = async url => { const u = String(url);
+      if (u.includes("/markets/trades")) return tradesJson === "fail" ? new Response("{}", { status: 503 }) : new Response(JSON.stringify(tradesJson));
+      return new Response(JSON.stringify(u.includes("/orderbook") ? bookJson : listJson)); };
+    await rt.checkpoints("BTC-USD", now); return mt.get("paperstat3");
+  };
+  let s1 = await runWith({ trades: [{ created_time: iso(Date.now() / 1000 - 5), yes_price: 56 }] });     // trades at 56c: the book (56c) is right, the list (31c) is not
+  assert.equal(s1.trN, 1); assert.equal(s1.trBookCloser, 1); assert.equal(s1.trListCloser || 0, 0);
+  assert(Math.abs(s1.trBook - 0) < 1e-9 && Math.abs(s1.trList - 0.25) < 1e-9);
+  assert.equal(s1.cmps[0].trade, 0.56); assert(s1.cmps[0].tradeAge <= 6);
+  assert.equal(s1.cps, 1, "checkpoint still counted once");
+  s1 = await runWith({ trades: [{ created_time: iso(Date.now() / 1000 - 300), yes_price: 31 }] });     // old trade: shown, not scored
+  assert.equal(s1.trN || 0, 0); assert.equal(s1.cmps[0].trade, 0.31); assert(s1.cmps[0].tradeAge >= 299);
+  s1 = await runWith("fail");                                                                          // trades feed down: noted, nothing else breaks
+  assert.match(s1.tradeErr, /503/); assert.equal(s1.book, 1);
+}
 console.log("paper tests passed");
 
 // ---- daily P&L: grouped by UTC day, newest first, unsettled ignored

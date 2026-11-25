@@ -128,12 +128,33 @@ export class Relay extends DurableObject {
   // Paper bets use Kalshi's live order book for this market (not the market list, which can lag), and only when
   // both the quote and the index are fresh and the relay has been up long enough to have clean history.
   async paperCheckpoint(close, T, sm, listQ) {
+    const bq = await this.paperCheckpointInner(close, T, sm, listQ);
+    if (bq && bq.ticker) { try { await this.tradeCheck(bq, listQ); } catch (e) { const st = await this.ctx.storage.get("paperstat3"); if (st) { st.tradeErr = String(e.message || e).slice(0, 120); await this.ctx.storage.put("paperstat3", st); } } }
+  }
+  // Which quote matches real trading? Compare both against Kalshi's most recent trade (public trades feed).
+  async tradeCheck(bq, listQ) {
+    const r = await fetch(`https://api.elections.kalshi.com/trade-api/v2/markets/trades?ticker=${encodeURIComponent(bq.ticker)}&limit=10`, { headers: { accept: "application/json" } });
+    if (!r.ok) throw new Error(`Kalshi trades HTTP ${r.status}`);
+    const t = lastTrade(await r.json()), st = await this.ctx.storage.get("paperstat3");
+    if (!t || !st) return;
+    const age = Math.max(0, Math.round(Date.now() / 1000 - t.at));
+    if (st.lastCmp) { st.lastCmp.trade = t.yes; st.lastCmp.tradeAge = age; }
+    if (st.cmps && st.cmps.length) { const c = st.cmps[st.cmps.length - 1]; c.trade = t.yes; c.tradeAge = age; }
+    if (age <= TRADE_FRESH_S && listQ && listQ.yes != null) {
+      const dl = Math.abs(listQ.yes - t.yes), db = Math.abs(bq.yes - t.yes);
+      st.trN = (st.trN || 0) + 1; st.trList = +((st.trList || 0) + dl).toFixed(4); st.trBook = +((st.trBook || 0) + db).toFixed(4);
+      if (db < dl) st.trBookCloser = (st.trBookCloser || 0) + 1; else if (dl < db) st.trListCloser = (st.trListCloser || 0) + 1;
+    }
+    delete st.tradeErr;
+    await this.ctx.storage.put("paperstat3", st);
+  }
+  async paperCheckpointInner(close, T, sm, listQ) {
     if (!this.bootAt) this.bootAt = Date.now();
     const st = (await this.ctx.storage.get("paperstat3")) || { cps: 0, book: 0, bookFail: 0, stale: 0, warmup: 0, sized: 0, diffN: 0, diffSum: 0, diff5: 0 };
     st.cps++; st.at = Math.floor(Date.now() / 1000);
     let bq = null, err = "";
     try { bq = await this.kalshiBook("BTC-USD", close); } catch (e) { err = String(e.message || e); }
-    if (!bq || bq.bid == null || bq.ask == null) { st.bookFail++; if (err) st.lastErr = err.slice(0, 160); await this.ctx.storage.put("paperstat3", st); return; }
+    if (!bq || bq.bid == null || bq.ask == null) { st.bookFail++; if (err) st.lastErr = err.slice(0, 160); await this.ctx.storage.put("paperstat3", st); return null; }
     st.book++; if (bq.bidSize != null && bq.askSize != null) st.sized++;
     if (listQ && listQ.yes != null) { const d = Math.abs(listQ.yes - bq.yes); st.diffN++; st.diffSum = +(st.diffSum + d).toFixed(4); if (d > 0.05) st.diff5++;
       st.lastCmp = { at: Math.floor(Date.now() / 1000), t: T, list: [listQ.bid, listQ.ask], book: [bq.bid, bq.ask], bookSize: [bq.bidSize, bq.askSize] };
@@ -143,9 +164,10 @@ export class Relay extends DurableObject {
     if (Date.now() - this.bootAt < PAPER_WARMUP_MS) { st.warmup++; skip = "warmup"; }
     else if (bq.ms > PAPER_MAX_QUOTE_MS || ixAge > PAPER_MAX_INDEX_AGE) { st.stale++; skip = "stale"; }
     await this.ctx.storage.put("paperstat3", st);
-    if (skip) return;
+    if (skip) return bq;
     await this.paperBet(close, T, sm.p, bq, { listYes: listQ ? listQ.yes : null, ms: bq.ms, ixAge: +ixAge.toFixed(1) });   // model only
     try { await this.liveMaybeTrade(close, T, sm.p, bq); } catch (e) { const ls = await this.liveState(); ls.lastErr = "trade: " + String(e.message || e).slice(0, 200); await this.ctx.storage.put("live", ls); }
+    return bq;
   }
   // ---------------- LIVE TRADING (real money, BTC only) ----------------
   // Off unless the Cloudflare secret LIVE_TRADING is "on" AND a separate trading key is set. Same signal and
@@ -514,7 +536,18 @@ function yesFromMarket(m) { const q = quoteFromMarket(m); return q ? q.yes : nul
 // Deliberately pessimistic: fills at the ask plus 1 cent of slippage, limited to the quantity actually shown at that price.
 const PAPER_MIN_EDGE = 0.03, PAPER_SLIP = 0.01, PAPER_DEPTH = 20, PAPER_FLAT = 25;
 const PAPER_KEY = "paper3:BTC-USD";                       // record using live order-book quotes (paper2 = market-list quotes)
-const PAPER_WARMUP_MS = 20 * 60000, PAPER_MAX_QUOTE_MS = 1500, PAPER_MAX_INDEX_AGE = 5;
+const PAPER_WARMUP_MS = 20 * 60000, PAPER_MAX_QUOTE_MS = 1500, PAPER_MAX_INDEX_AGE = 5, TRADE_FRESH_S = 30;
+// Most recent trade in a Kalshi trades response: Yes price (dollars) and time (unix s). Dollar or cent fields.
+function lastTrade(j) {
+  let best = null;
+  for (const t of (j && j.trades) || []) {
+    const at = Date.parse(t.created_time || t.ts || ""); if (!isFinite(at)) continue;
+    const d = num(t.yes_price_dollars ?? t.yes_price_fixed), c = num(t.yes_price), y = d != null ? d : c != null ? c / 100 : null;
+    if (y == null) continue;
+    if (!best || at > best.at * 1000) best = { yes: y, at: at / 1000 };
+  }
+  return best;
+}
 let LIVE_RETRY_MS = 1000;
 export function _setLiveRetryMs(ms) { LIVE_RETRY_MS = ms; }   // tests only
 // Kalshi order book -> Yes quote. The book lists bids only: best Yes ask = 1 - best No bid. Dollar or cent fields.
@@ -640,7 +673,7 @@ function parseFills(j, side) {       // our buys on one side of one market: tota
   }
   return n ? { count: n, avg: +(cost / n).toFixed(4) } : null;
 }
-export { yesFromMarket, quoteFromBook, paperDecide, paperSim, paperBreakdown, paperDaily, liveResult, liveAccount, liveGate, liveSize, parseBalance, parseFilled, parseFills };
+export { lastTrade, yesFromMarket, quoteFromBook, paperDecide, paperSim, paperBreakdown, paperDaily, liveResult, liveAccount, liveGate, liveSize, parseBalance, parseFilled, parseFills };
 export async function fetchBook(coin) {
   if (Date.now() >= cbBackoff.until) {
     try {

@@ -794,12 +794,14 @@ function paperHtml() {
   const ct = x => x == null ? "—" : (Math.round(x * 1000) / 10).toFixed(1) + "¢", qty = x => x == null ? "?" : Math.round(x).toLocaleString("en-US");
   const tfc = new Intl.DateTimeFormat([], { hour: "numeric", minute: "2-digit" });
   const cmps = (st.cmps && st.cmps.length ? st.cmps : st.lastCmp ? [st.lastCmp] : []).slice().reverse();
-  const lagLast = cmps.length ? `<table class="cpt cmp"><thead><tr><th>Recent quotes</th><th>List bid/ask</th><th>Book bid/ask</th><th>Size</th></tr></thead><tbody>` +
-    cmps.map(c => `<tr><td>${c.at ? tfc.format(new Date(c.at * 1000)) + ", " : ""}${c.t / 60}m</td><td>${ct(c.list[0])}/${ct(c.list[1])}</td><td>${ct(c.book[0])}/${ct(c.book[1])}</td><td>${c.bookSize ? qty(c.bookSize[0]) + " / " + qty(c.bookSize[1]) : "—"}</td></tr>`).join("") +
+  const lagLast = cmps.length ? `<table class="cpt cmp"><thead><tr><th>Recent quotes</th><th>List</th><th>Live book</th><th>Last trade</th></tr></thead><tbody>` +
+    cmps.map(c => `<tr><td>${c.at ? tfc.format(new Date(c.at * 1000)) + ", " : ""}${c.t / 60}m</td><td>${ct(c.list[0])}/${ct(c.list[1])}</td><td>${ct(c.book[0])}/${ct(c.book[1])}</td><td>${c.trade != null ? ct(c.trade) + ` <span class="hint">${c.tradeAge < 120 ? c.tradeAge + "s" : Math.round(c.tradeAge / 60) + "m"} ago</span>` : "—"}</td></tr>`).join("") +
     `</tbody></table>` : "";
+  const trv = st.trN ? `<div>Checked against Kalshi trades made within 30 s (${st.trN}): live book off by ${(st.trBook / st.trN * 100).toFixed(1)}¢ on average, market list off by ${(st.trList / st.trN * 100).toFixed(1)}¢. ` +
+    `Book closer ${st.trBookCloser || 0}×, list closer ${st.trListCloser || 0}×.</div>` : st.tradeErr ? `<div class="down" style="font-size:11px">Trades check: ${st.tradeErr}</div>` : "";
   const prev = P.prev && P.prev.bets ? `<div style="font-size:11px">Previous record (market-list prices, now retired): ${P.prev.bets} bets, ${usd(P.prev.pnl)} at $${A.flat} flat stakes.</div>` : "";
   return `<div style="margin-top:10px"><b style="color:var(--text)">Paper trading · BTC · no real money · model only</b>` +
-    (P.sims || []).map(one).join("") + `<div style="margin-top:4px">${diag}</div>` + lag + lagLast + prev +
+    (P.sims || []).map(one).join("") + `<div style="margin-top:4px">${diag}</div>` + lag + trv + lagLast + prev +
     (bd ? `<table class="cpt"><thead><tr><th>Where the P&amp;L comes from</th><th>Bets</th><th>Won</th><th>$${A.flat} flat P&amp;L</th></tr></thead><tbody>${bd}</tbody></table>` : "") +
     (dd ? `<table class="cpt"><thead><tr><th>Day (UTC)</th><th>Bets</th><th>Won</th><th>$${A.flat} flat P&amp;L</th></tr></thead><tbody>${dd}</tbody></table>` +
       (days.length > 1 ? `<div style="font-size:11px">Best day ${usd(best)}, worst day ${usd(worst)}.</div>` : "") : "") +
