@@ -166,7 +166,7 @@ export class Relay extends DurableObject {
     await this.ctx.storage.put("paperstat3", st);
     if (skip) return bq;
     await this.paperBet(close, T, sm.p, bq, { listYes: listQ ? listQ.yes : null, ms: bq.ms, ixAge: +ixAge.toFixed(1) });   // model only
-    try { await this.liveMaybeTrade(close, T, sm.p, bq); } catch (e) { const ls = await this.liveState(); ls.lastErr = "trade: " + String(e.message || e).slice(0, 200); await this.ctx.storage.put("live", ls); }
+    try { await this.liveMaybeTrade(close, T, sm.p, bq); } catch (e) { const ls = await this.liveState(); ls.lastErr = "trade: " + String(e.message || e).slice(0, 200); ls.lastErrAt = Math.floor(Date.now() / 1000); await this.ctx.storage.put("live", ls); }
     return bq;
   }
   // ---------------- LIVE TRADING (real money, BTC only) ----------------
@@ -210,7 +210,7 @@ export class Relay extends DurableObject {
     if (st.orders.some(o => o.close === close)) return;                                   // one order per window
     const block = liveGate(st, cfg, Date.now()); if (block) { st.lastSkip = block; await this.ctx.storage.put("live", st); return; }
     const acct = liveAccount(st, cfg);
-    let balance = null; try { balance = await this.liveBalance(); } catch (e) { st.lastErr = "balance: " + String(e.message || e).slice(0, 160); }
+    let balance = null; try { balance = await this.liveBalance(); } catch (e) { st.lastErr = "balance: " + String(e.message || e).slice(0, 160); st.lastErrAt = Math.floor(Date.now() / 1000); }
     const count = liveSize(acct.equity, Math.min(acct.available, balance == null ? 0 : balance), d, cfg.maxStake);
     if (count < 1) { st.lastSkip = balance == null ? "couldn't read the Kalshi balance" : "stake too small for one contract"; await this.ctx.storage.put("live", st); return; }
     const id = `walls-${close}-${T}`, body = liveOrderBody(quote.ticker, id, d.side, d.price, count, quote.ranges);
@@ -219,8 +219,8 @@ export class Relay extends DurableObject {
     st.orders.push(o); st.orders = st.orders.slice(-500); await this.ctx.storage.put("live", st);   // record before sending: no double orders
     try {
       const res = await this.kalshiTrade("POST", "/trade-api/v2/portfolio/events/orders", body);
-      Object.assign(o, liveOrderResult(res, d.side));
-    } catch (e) { o.status = "error"; o.error = String(e.message || e).slice(0, 200); o.filled = 0; st.lastErr = o.error; }
+      Object.assign(o, liveOrderResult(res, d.side)); st.lastErr = ""; st.lastErrAt = 0;
+    } catch (e) { o.status = "error"; o.error = String(e.message || e).slice(0, 200); o.filled = 0; st.lastErr = o.error; st.lastErrAt = Math.floor(Date.now() / 1000); }
     await this.ctx.storage.put("live", st);
   }
   async liveSettle() {
@@ -235,13 +235,13 @@ export class Relay extends DurableObject {
     await this.ctx.storage.put("live", st);
   }
   async liveReport() {
-    try { await this.liveSettle(); } catch (e) { const s2 = await this.liveState(); s2.lastErr = "settle: " + String(e.message || e).slice(0, 160); await this.ctx.storage.put("live", s2); }
+    try { await this.liveSettle(); } catch (e) { const s2 = await this.liveState(); s2.lastErr = "settle: " + String(e.message || e).slice(0, 160); s2.lastErrAt = Math.floor(Date.now() / 1000); await this.ctx.storage.put("live", s2); }
     const cfg = this.liveConfig(), st = await this.liveState(), acct = liveAccount(st, cfg);
     let balance = null, balErr = "";
     if (cfg.hasKey) { try { balance = await this.liveBalance(); } catch (e) { balErr = String(e.message || e).slice(0, 160); } }
     return { on: cfg.on, hasKey: cfg.hasKey, halted: !!st.halted, haltReason: st.haltReason || "", gate: liveGate(st, cfg, Date.now()),
       budget: cfg.budget, maxStake: cfg.maxStake, dailyLoss: cfg.dailyLoss, floor: cfg.floor, horizons: cfg.horizons, ...acct, balance, balErr,
-      lastErr: st.lastErr || "", lastSkip: st.lastSkip || "", orders: st.orders.slice(-20).reverse() };
+      lastErr: st.lastErr || "", lastErrAt: st.lastErrAt || 0, lastSkip: st.lastSkip || "", orders: st.orders.slice(-20).reverse() };
   }
   async openMarket(coin, close) {
     const series = SERIES[coin]; if (!series) return null;
@@ -549,7 +549,7 @@ function lastTrade(j) {
   return best;
 }
 let LIVE_RETRY_MS = 1000;
-const RELAY_VERSION = "2026-11-25.v2orders";   // shown on /status; bump on relay changes
+const RELAY_VERSION = "2026-11-25.errtime";   // shown on /status; bump on relay changes
 export function _setLiveRetryMs(ms) { LIVE_RETRY_MS = ms; }   // tests only
 // Kalshi order book -> Yes quote. The book lists bids only: best Yes ask = 1 - best No bid. Dollar or cent fields.
 function quoteFromBook(j) {

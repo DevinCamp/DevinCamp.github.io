@@ -195,3 +195,16 @@ M._setLiveRetryMs(0);
 
 }
 console.log("live rate-limit tests passed");
+
+// ---- the "last error" line: timestamped, and cleared by the next accepted order
+{
+  const [re, me] = mk(liveEnv); globalThis.fetch = kalshi();
+  me.set("live", { halted: false, orders: [], lastErr: "Kalshi POST /trade-api/v2/portfolio/orders HTTP 410", lastErrAt: 1 });
+  await re.checkpoints("BTC-USD", cl - 300);
+  const s = me.get("live"); assert.equal(s.orders[0].status, "filled"); assert.equal(s.lastErr, ""); assert.equal(s.lastErrAt, 0);
+  const [rf, mf] = mk(liveEnv); globalThis.fetch = kalshi({ order: new Response('{"error":{"code":"invalid_price"}}', { status: 400 }) });
+  await rf.checkpoints("BTC-USD", cl - 300);
+  const sf = mf.get("live"); assert.match(sf.lastErr, /invalid_price/); assert(Math.abs(sf.lastErrAt - Date.now() / 1000) < 5);
+  assert.equal((await rf.liveReport()).lastErrAt, sf.lastErrAt);
+}
+console.log("live error-line tests passed");

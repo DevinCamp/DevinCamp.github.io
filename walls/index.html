@@ -38,6 +38,10 @@
   #pushStatus.ok { color: var(--up); } #pushStatus.bad { color: var(--down); }
   #resDlg { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 16px; }
   #resDlg[hidden] { display: none; }
+  #resDlg, #alertDlg, #relayDlg { padding-top: max(16px, calc(env(safe-area-inset-top) + 8px)); padding-bottom: max(16px, calc(env(safe-area-inset-bottom) + 8px)); }
+  #resDlg .dlg.wide { max-height: calc(100vh - 32px); max-height: calc(100dvh - max(16px, env(safe-area-inset-top) + 8px) - max(16px, env(safe-area-inset-bottom) + 8px)); }
+  #resDlg .dlg.wide > .row:first-child { position: sticky; top: -18px; z-index: 2; margin: -18px -18px 0; padding: 14px 18px 10px;
+    background: #121720; border-bottom: 1px solid var(--line); border-radius: 16px 16px 0 0; }
   .dlg.wide { width: min(760px, 100%); max-height: 88vh; overflow-y: auto; }
   .tbl { overflow: auto; border: 1px solid #2a3240; border-radius: 10px; flex: none; max-height: 42vh; min-height: 120px; }
   #resTable { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
@@ -750,7 +754,7 @@ function liveHtml() {
     (L.on || (L.orders || []).length ? `<div>Pot ${usd(L.equity)} of a ${usd(L.budget)} budget (${sgn(L.realized || 0)} so far, ${sgn(L.todayPnl || 0)} today)` +
       (L.openCost ? ` · ${usd(L.openCost)} in open bets` : "") + (L.balance != null ? ` · Kalshi balance ${usd(L.balance)}` : "") +
       (L.filledBets ? ` · ${L.filledBets} filled bets, ${L.wins} won` : "") + `</div>` : "") +
-    (L.lastErr ? `<div class="down" style="font-size:11px">Last error: ${L.lastErr.replace(/</g, "&lt;")}</div>` : "") +
+    (L.lastErr ? `<div class="down" style="font-size:11px">Last error${L.lastErrAt ? " (" + tf.format(new Date(L.lastErrAt * 1000)) + ")" : ""}: ${L.lastErr.replace(/</g, "&lt;")}</div>` : "") +
     (L.balErr ? `<div class="down" style="font-size:11px">Balance: ${L.balErr.replace(/</g, "&lt;")}</div>` : "") +
     (rows ? `<table class="cpt"><thead><tr><th>Placed</th><th>Bet</th><th>Filled</th><th>Result</th></tr></thead><tbody>${rows}</tbody></table>` : "") +
     `<div style="font-size:11px">Rules: same signal as paper trading, only ${(L.horizons || [300]).map(t => t / 60 + " min").join(", ")} before the close; at most ${Math.round((L.maxStake || 0.1) * 100)}% of the pot per bet (less on a small edge); one order per window, filled immediately or cancelled; stops for the day after losing ${Math.round((L.dailyLoss || 0.2) * 100)}% of the budget, and for good if the pot falls below ${usd(L.floor)}. It never uses more than the ${usd(L.budget)} budget plus its own winnings.</div>` +
