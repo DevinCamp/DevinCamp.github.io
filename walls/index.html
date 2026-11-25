@@ -130,6 +130,10 @@
   #refreshBtn { border-radius: 10px; }
   .meter { height: 5px; border-radius: 3px; width: 110px; }
   #walls { padding: 9px 18px; background: var(--panel); border-top: 1px solid var(--line); }
+  /* one fixed-height line (scrolls sideways): its content changes constantly, and a changing height would resize the chart */
+  #walls { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; white-space: nowrap; height: 40px; min-height: 40px; scrollbar-width: none; }
+  #walls::-webkit-scrollbar { display: none; } #walls > * { flex: none; }
+  .stats #press { display: inline-block; min-width: 150px; white-space: nowrap; }
   .dlg { background: #121720; border-color: #232b37; border-radius: 16px; }
   #resTable th { background: #151b24; }
   .cpt { border-collapse: collapse; margin: 8px 0 4px; font-size: 12px; font-variant-numeric: tabular-nums; }
@@ -147,11 +151,13 @@
   #round .rclock { text-align: right; }
   #round .rclock span { font: 700 30px/1.1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   #round .rclock.soon span { color: var(--gold); }
-  #round .rrow { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-top: 6px; font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); }
+  #round .rrow { display: flex; flex-wrap: nowrap; gap: 18px; margin-top: 6px; font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); white-space: nowrap; overflow: hidden; height: 18px; }
   #round .rrow b { color: var(--text); font-weight: 600; }
   #round .rrow b.up { color: var(--up); } #round .rrow b.down { color: var(--down); }
-  #round .rpx { margin-left: auto; }
-  #round .rrow2 { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+  #round .rpx { font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); white-space: nowrap; min-width: 150px; }
+  #round .rpx b { font-weight: 600; } #round .rpx b.up { color: var(--up); } #round .rpx b.down { color: var(--down); }
+  #round .rrow2 { display: flex; align-items: center; gap: 14px; margin-top: 6px; height: 28px; white-space: nowrap; overflow: hidden; }
+  #round .rtop { height: 50px; } #round .rline { height: 34px; }
   #round .rlast { background: none; border: 0; padding: 0; display: flex; align-items: center; gap: 8px; font-size: 12px; }
   .sq { display: inline-flex; gap: 3px; }
   .sq i { width: 11px; height: 11px; border-radius: 2px; display: inline-block; }
@@ -159,7 +165,8 @@
   #rZoom { font-size: 12px; padding: 4px 10px; }
   #tradeBar { padding: 10px 18px 12px; border-top: 1px solid var(--line); background: var(--panel); }
   #tradeBar[hidden] { display: none !important; }
-  .tspend { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .tspend { display: flex; align-items: center; gap: 8px; font-size: 13px; height: 30px; white-space: nowrap; overflow: hidden; }
+  #tToday { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .chips { display: inline-flex; gap: 6px; }
   .chips button { padding: 4px 10px; border-radius: 999px; font-size: 13px; }
   .chips button.on { background: #24304a; border-color: #3b5bdb; color: #fff; }
@@ -167,12 +174,13 @@
   .buy { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 10px 8px; border-radius: 12px; font-variant-numeric: tabular-nums; }
   .buy small { font-size: 12px; font-weight: 700; letter-spacing: .04em; }
   .buy b { font: 700 26px/1.1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-  .buy span { font-size: 11px; color: var(--muted); }
+  .buy span { font-size: 11px; color: var(--muted); height: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  .buy small { height: 15px; } .buy b { height: 29px; }
   .buy.bup { background: #0f2a22; border-color: #1e5a45; color: var(--up); }
   .buy.bdown { background: #2c1219; border-color: #6a2333; color: var(--down); }
   .buy.armed { outline: 2px solid currentColor; outline-offset: 2px; }
   .buy:disabled { opacity: .45; cursor: not-allowed; }
-  .tmsg { margin-top: 8px; font-size: 12px; min-height: 16px; }
+  .tmsg { margin-top: 8px; font-size: 12px; height: 16px; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .tmsg.ok { color: var(--up); } .tmsg.bad { color: var(--down); }
   /* ---------- phones (portrait or landscape) ---------- */
   @media (max-width: 700px), (max-height: 500px) {
@@ -222,9 +230,11 @@
   }
   @media (max-width: 700px) and (min-height: 501px) {
     #round { padding: 8px 12px 6px; }
-    #round .rline { font-size: 22px; } #round .rclock span { font-size: 22px; }
-    #round .rrow { font-size: 11.5px; gap: 2px 12px; } #round .rpx { margin-left: 0; }
-    #tradeBar { padding: 8px 12px 10px; } .buy b { font-size: 22px; } .buy { padding: 8px 6px; }
+    #round .rline { font-size: 22px; height: 27px; } #round .rclock span { font-size: 22px; } #round .rtop { height: 42px; }
+    #round .rrow { font-size: 11.5px; gap: 12px; height: 16px; } #round .rpx { font-size: 11.5px; min-width: 128px; } #round .rrow2 { gap: 10px; }
+    .sq i:nth-child(-n+4) { display: none; }
+    #rZoom { padding: 4px 8px; flex: none; }
+    #tradeBar { padding: 8px 12px 10px; } .buy b { font-size: 22px; height: 26px; } .buy { padding: 8px 6px; }
     body.kalshi #walls { display: none; }
   }
   @media (max-height: 500px) { #round .rrow, #round .rrow2, #tradeBar .tmsg { display: none; } }
@@ -299,9 +309,9 @@
   </div>
   <div class="rrow">
     <span>To beat <b id="rTgt">—</b></span><span>Now <b id="rNow">—</b></span><span>Odds <b id="rOdds">—</b></span>
-    <span class="rpx">Up <b id="rUp" class="up">—</b> · Down <b id="rDown" class="down">—</b></span>
   </div>
-  <div class="rrow2"><button type="button" id="rLastBtn" class="rlast" title="Past 15-minute results"><span class="hint">Last</span> <span id="rLast" class="sq"></span></button>
+  <div class="rrow2"><span class="rpx">Up <b id="rUp" class="up">—</b> · Down <b id="rDown" class="down">—</b></span>
+    <button type="button" id="rLastBtn" class="rlast" title="Past 15-minute results"><span class="hint">Last</span> <span id="rLast" class="sq"></span></button>
     <span style="flex:1"></span><button type="button" id="rZoom">This round</button></div>
 </section>
 <div id="wrap"><canvas id="cv"></canvas><div id="tip"></div>
@@ -1410,8 +1420,11 @@ function renderTrade(q) {
     setTxt(id + "Sub", MQ.armed === side ? `Tap again to buy ${n} for ~$${(n * (px + 0.07 * px * (1 - px))).toFixed(2)}` : px ? `${n} shares · wins $${n}` : "");
   }
   const m = MQ.manual;
-  setTxt("tToday", m ? `Today $${(m.spentToday || 0).toFixed(2)} of $${m.dailyMax}` + (m.bets ? ` · P&L ${m.realized >= 0 ? "+" : "−"}$${Math.abs(m.realized).toFixed(2)}` : "") : "");
+  setTxt("tToday", m ? `Today $${(m.spentToday || 0).toFixed(2)}/$${m.dailyMax}` + (m.bets ? ` · P&L ${m.realized >= 0 ? "+" : "−"}$${Math.abs(m.realized).toFixed(2)}` : "") : "");
   if (q && !q.canTrade && !MQ.busy && $("tMsg").dataset.k !== "nokey") { $("tMsg").dataset.k = "nokey"; tMsg("Prices are live. To buy from here, set the trading key in Cloudflare.", ""); }
+  if (!q && !MQ.busy) { const k = "noq:" + MQ.err; if ($("tMsg").dataset.k !== k) { $("tMsg").dataset.k = k;
+    tMsg(MQ.err ? (/WebSocket|Upgrade/.test(MQ.err) ? "Your relay is still updating. Buying works once it has." : "No live price: " + MQ.err) : "Loading Kalshi prices…", MQ.err ? "bad" : ""); } }
+  else if (q && q.canTrade && /^noq:/.test($("tMsg").dataset.k || "")) { $("tMsg").dataset.k = ""; tMsg("Each contract pays $1 if its side wins. Tap a button twice to buy.", ""); }
 }
 function tMsg(text, cls) { const e = $("tMsg"); e.textContent = text; e.className = "tmsg hint" + (cls ? " " + cls : ""); }
 async function buyTap(side) {
