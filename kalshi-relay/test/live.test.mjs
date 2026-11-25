@@ -4,7 +4,7 @@ import fs from "fs"; import os from "os"; import path from "path"; import assert
 const src = fs.readFileSync(new URL("../src/index.js", import.meta.url), "utf8").replace(/^import .*$/m, "class DurableObject {}");
 const f = path.join(os.tmpdir(), "relay_mod_live.mjs"); fs.writeFileSync(f, src);
 const M = await import(f);
-const { liveSize, liveGate, liveResult, liveAccount, parseBalance, parseFilled, parseFills, snapPrice, liveOrderBody, liveOrderResult, Relay } = M;
+const { liveSize, liveGate, liveResult, liveAccount, parseBalance, parseShardBalances, shardBalance, parseFilled, parseFills, snapPrice, liveOrderBody, liveOrderResult, Relay } = M;
 
 // ---- sizing: min(max stake, half Kelly) of the pot, whole contracts, never more than is free or on offer
 const fee = p => 0.07 * p * (1 - p);
@@ -77,11 +77,11 @@ const kalshi = (over = {}) => async (url, opt = {}) => {
   const J = (o, s = 200) => new Response(JSON.stringify(o), { status: s });
   if (u.includes("/portfolio/events/orders") && method === "POST") return over.order || J({ order_id: "o1", client_order_id: "x", fill_count: "4.00", remaining_count: "0.00", average_fill_price: "0.5800", average_fee_paid: "0.0171", ts_ms: 1 }, 201);
   if (u.includes("/portfolio/orders") && method === "POST") return J({ error: { code: "deprecated_v1_order_endpoint" } }, 410);
-  if (u.includes("/portfolio/balance")) return J({ balance: over.balance ?? 5000 });
+  if (u.includes("/portfolio/balance")) return J(over.balanceJson || { balance: over.balance ?? 5000 });
   if (u.includes("/portfolio/fills")) return J({ fills: [{ outcome_side: "yes", book_side: "bid", count_fp: "4.00", yes_price_dollars: "0.5800", no_price_dollars: "0.4200", fee_cost: "0.0700" }], cursor: "" });
   if (u.includes("/orderbook")) return J({ orderbook: { yes: [[55, 60]], no: [[43, 80]] } });
   if (u.includes("status=settled")) return J({ markets: [{ close_time: new Date((over.settledClose || cl) * 1000).toISOString(), result: over.result || "yes" }] });
-  return J({ markets: [{ ticker: "KXBTC15M-T", close_time: new Date(cl * 1000).toISOString(), yes_bid_dollars: "0.5500", yes_ask_dollars: "0.5700" }] });
+  return J({ markets: [{ ticker: "KXBTC15M-T", exchange_index: 2, close_time: new Date(cl * 1000).toISOString(), yes_bid_dollars: "0.5500", yes_ask_dollars: "0.5700" }] });
 };
 const posts = () => calls.filter(c => c.method === "POST");
 
@@ -208,3 +208,21 @@ console.log("live rate-limit tests passed");
   assert.equal((await rf.liveReport()).lastErrAt, sf.lastErrAt);
 }
 console.log("live error-line tests passed");
+
+// ---- exchange shards: crypto markets trade on shard 2, and API orders only draw on that shard's money
+{
+  const bj = sh2 => ({ balance: 4926, balance_dollars: "49.26", portfolio_value: 0, updated_ts: 1,
+    balance_breakdown: [{ exchange_index: 0, balance: (49.26 - sh2).toFixed(4) }, { exchange_index: 2, balance: sh2.toFixed(4) }] });
+  assert.deepEqual(parseShardBalances(bj(0.5)), { 0: 48.76, 2: 0.5 }); assert.equal(parseShardBalances({ balance: 1 }), null);
+  assert.equal(shardBalance({ total: 49.26, shards: { 2: 0.5 } }, 2), 0.5); assert.equal(shardBalance({ total: 49.26, shards: null }, 2), 49.26);
+
+  let [rs, ms] = mk(liveEnv); calls = []; globalThis.fetch = kalshi({ balanceJson: bj(0.5) });       // $49 total, 50c on the crypto shard
+  await rs.checkpoints("BTC-USD", cl - 300);
+  assert.equal(posts().length, 0, "no order the crypto shard can't pay for"); assert.match(ms.get("live").lastSkip, /only \$0\.50 on Kalshi's crypto shard/);
+  const rep3 = await rs.liveReport(); assert.equal(rep3.balance, 49.26); assert.equal(rep3.shardBalance, 0.5);
+
+  [rs, ms] = mk(liveEnv); calls = []; globalThis.fetch = kalshi({ balanceJson: bj(1.3) });          // $1.30 on the shard: one contract at ~60c... two
+  await rs.checkpoints("BTC-USD", cl - 300);
+  assert.equal(posts()[0].body.count, String(Math.floor(1.3 / (0.58 + fee(0.58)))), "sized to the crypto shard's money, not the $49 total");
+}
+console.log("live shard tests passed");

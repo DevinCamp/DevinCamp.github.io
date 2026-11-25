@@ -752,8 +752,9 @@ function liveHtml() {
   return `<div style="margin-top:10px;padding:10px 12px;border:1px solid ${L.on && L.hasKey && !L.halted ? "var(--down)" : "var(--line)"};border-radius:10px">` +
     `<b style="color:var(--text)">Live trading · BTC · real money</b><div class="${cls}">${state}</div>` +
     (L.on || (L.orders || []).length ? `<div>Pot ${usd(L.equity)} of a ${usd(L.budget)} budget (${sgn(L.realized || 0)} so far, ${sgn(L.todayPnl || 0)} today)` +
-      (L.openCost ? ` · ${usd(L.openCost)} in open bets` : "") + (L.balance != null ? ` · Kalshi balance ${usd(L.balance)}` : "") +
+      (L.openCost ? ` · ${usd(L.openCost)} in open bets` : "") + (L.balance != null ? ` · Kalshi balance ${usd(L.balance)}` + (L.shardBalance != null ? `, ${usd(L.shardBalance)} of it on the crypto shard the bot trades from` : "") : "") +
       (L.filledBets ? ` · ${L.filledBets} filled bets, ${L.wins} won` : "") + `</div>` : "") +
+    (L.on && L.hasKey && L.shardBalance != null && L.shardBalance < 2 ? `<div class="down">Only ${usd(L.shardBalance)} is on Kalshi's crypto shard, so the bot can't place bets. Kalshi only moves money between shards automatically for orders placed in its own app. To fund the bot, move money to the Crypto exchange index at kalshi.com/account/exchange-indexes.</div>` : "") +
     (L.lastErr ? `<div class="down" style="font-size:11px">Last error${L.lastErrAt ? " (" + tf.format(new Date(L.lastErrAt * 1000)) + ")" : ""}: ${L.lastErr.replace(/</g, "&lt;")}</div>` : "") +
     (L.balErr ? `<div class="down" style="font-size:11px">Balance: ${L.balErr.replace(/</g, "&lt;")}</div>` : "") +
     (rows ? `<table class="cpt"><thead><tr><th>Placed</th><th>Bet</th><th>Filled</th><th>Result</th></tr></thead><tbody>${rows}</tbody></table>` : "") +

@@ -199,7 +199,7 @@ export class Relay extends DurableObject {
     const now = Date.now(), c = this.balCache;
     if (c && now - c.at < 60000) return c.value;
     if (this.balBackoff && now < this.balBackoff) { if (c && now - c.at < 600000) return c.value; throw new Error("Kalshi balance rate-limited; retrying shortly"); }
-    try { const v = parseBalance(await this.kalshiTrade("GET", "/trade-api/v2/portfolio/balance")); this.balCache = { at: now, value: v }; this.balBackoff = 0; return v; }
+    try { const j = await this.kalshiTrade("GET", "/trade-api/v2/portfolio/balance"), v = { total: parseBalance(j), shards: parseShardBalances(j) }; this.balCache = { at: now, value: v }; this.balBackoff = 0; return v; }
     catch (e) { if (/HTTP 429/.test(String(e.message))) this.balBackoff = now + 60000; if (c && now - c.at < 600000) return c.value; throw e; }
   }
   async liveMaybeTrade(close, T, q, quote) {
@@ -210,9 +210,13 @@ export class Relay extends DurableObject {
     if (st.orders.some(o => o.close === close)) return;                                   // one order per window
     const block = liveGate(st, cfg, Date.now()); if (block) { st.lastSkip = block; await this.ctx.storage.put("live", st); return; }
     const acct = liveAccount(st, cfg);
-    let balance = null; try { balance = await this.liveBalance(); } catch (e) { st.lastErr = "balance: " + String(e.message || e).slice(0, 160); st.lastErrAt = Math.floor(Date.now() / 1000); }
+    let balance = null; try { balance = shardBalance(await this.liveBalance(), quote.shard); } catch (e) { st.lastErr = "balance: " + String(e.message || e).slice(0, 160); st.lastErrAt = Math.floor(Date.now() / 1000); }
     const count = liveSize(acct.equity, Math.min(acct.available, balance == null ? 0 : balance), d, cfg.maxStake);
-    if (count < 1) { st.lastSkip = balance == null ? "couldn't read the Kalshi balance" : "stake too small for one contract"; await this.ctx.storage.put("live", st); return; }
+    if (count < 1) {
+      st.lastSkip = balance == null ? "couldn't read the Kalshi balance"
+        : balance < d.price + kalshiFee(d.price) ? `only $${balance.toFixed(2)} on Kalshi's ${shardName(quote.shard)} shard, not enough for one contract` : "stake too small for one contract";
+      await this.ctx.storage.put("live", st); return;
+    }
     const id = `walls-${close}-${T}`, body = liveOrderBody(quote.ticker, id, d.side, d.price, count, quote.ranges);
     const o = { id, close, t: T, ticker: quote.ticker, side: d.side, limit: body.limitOurSide, count, q: d.q, edge: d.edge, at: Math.floor(Date.now() / 1000), status: "sending" };
     delete body.limitOurSide;
@@ -238,9 +242,10 @@ export class Relay extends DurableObject {
     try { await this.liveSettle(); } catch (e) { const s2 = await this.liveState(); s2.lastErr = "settle: " + String(e.message || e).slice(0, 160); s2.lastErrAt = Math.floor(Date.now() / 1000); await this.ctx.storage.put("live", s2); }
     const cfg = this.liveConfig(), st = await this.liveState(), acct = liveAccount(st, cfg);
     let balance = null, balErr = "";
-    if (cfg.hasKey) { try { balance = await this.liveBalance(); } catch (e) { balErr = String(e.message || e).slice(0, 160); } }
+    let shard = null;
+    if (cfg.hasKey) { try { const b = await this.liveBalance(); balance = b.total; shard = b.shards && b.shards[CRYPTO_SHARD] != null ? b.shards[CRYPTO_SHARD] : null; } catch (e) { balErr = String(e.message || e).slice(0, 160); } }
     return { on: cfg.on, hasKey: cfg.hasKey, halted: !!st.halted, haltReason: st.haltReason || "", gate: liveGate(st, cfg, Date.now()),
-      budget: cfg.budget, maxStake: cfg.maxStake, dailyLoss: cfg.dailyLoss, floor: cfg.floor, horizons: cfg.horizons, ...acct, balance, balErr,
+      budget: cfg.budget, maxStake: cfg.maxStake, dailyLoss: cfg.dailyLoss, floor: cfg.floor, horizons: cfg.horizons, ...acct, balance, shardBalance: shard, shardIndex: CRYPTO_SHARD, balErr,
       lastErr: st.lastErr || "", lastErrAt: st.lastErrAt || 0, lastSkip: st.lastSkip || "", orders: st.orders.slice(-20).reverse() };
   }
   async openMarket(coin, close) {
@@ -264,7 +269,7 @@ export class Relay extends DurableObject {
       r = await fetch(url, { headers: { accept: "application/json", ...(await kalshiHeaders(this.env.KALSHI_KEY_ID, this.env.KALSHI_PRIVATE_KEY, "GET", path)) } });
     if (!r.ok) throw new Error(`Kalshi orderbook HTTP ${r.status}`);
     const q = quoteFromBook(await r.json()); if (!q) return null;
-    q.ms = Date.now() - t0; q.ticker = m.ticker; q.ranges = Array.isArray(m.price_ranges) ? m.price_ranges : null; return q;
+    q.ms = Date.now() - t0; q.ticker = m.ticker; q.ranges = Array.isArray(m.price_ranges) ? m.price_ranges : null; q.shard = num(m.exchange_index); return q;
   }
   // ---- paper trading (BTC only, no real money): what a bot following the model would have done, with Kalshi fees.
   async paperBet(close, T, q, quote, audit = {}) {
@@ -549,7 +554,7 @@ function lastTrade(j) {
   return best;
 }
 let LIVE_RETRY_MS = 1000;
-const RELAY_VERSION = "2026-11-25.errtime";   // shown on /status; bump on relay changes
+const RELAY_VERSION = "2026-11-25.shard";   // shown on /status; bump on relay changes
 export function _setLiveRetryMs(ms) { LIVE_RETRY_MS = ms; }   // tests only
 // Kalshi order book -> Yes quote. The book lists bids only: best Yes ask = 1 - best No bid. Dollar or cent fields.
 function quoteFromBook(j) {
@@ -658,6 +663,17 @@ function liveSize(equity, available, d, maxStake) {   // whole contracts: min(ma
   return Math.max(0, n);
 }
 function parseBalance(j) { const c = num(j.balance); if (c != null) return c / 100; const d = num(j.balance_dollars); return d; }   // dollars
+// Kalshi splits money across exchange shards; crypto markets trade on shard 2. API orders draw only on their market's shard.
+const CRYPTO_SHARD = 2;
+function parseShardBalances(j) {   // {exchange_index: dollars} from balance_breakdown, or null if absent
+  const b = Array.isArray(j.balance_breakdown) ? j.balance_breakdown : null; if (!b) return null;
+  const out = {}; for (const x of b) { const i = num(x.exchange_index), v = num(x.balance); if (i != null && v != null) out[i] = v; } return out;
+}
+function shardBalance(bal, shard) { // money usable for an order on `shard`; the total if Kalshi gave no breakdown
+  if (bal == null) return null; if (typeof bal === "number") return bal;
+  return shard != null && bal.shards && bal.shards[shard] != null ? bal.shards[shard] : bal.total;
+}
+function shardName(i) { return i === 2 ? "crypto" : i === 0 ? "default" : `#${i}`; }
 function parseFilled(od, count) {
   for (const k of ["fill_count", "fill_count_fp", "taker_fill_count"]) { const v = num(od[k]); if (v != null) return v; }
   const rem = num(od.remaining_count ?? od.remaining_count_fp), init = num(od.initial_count ?? od.initial_count_fp) ?? count;
@@ -698,7 +714,7 @@ function liveOrderResult(res, side) { // V2 create-order response -> our order r
   return { orderId: res.order_id || null, filled, status: filled > 0 ? (rem > 0 ? "partly filled" : "filled") : "not filled",
     ...(avgYes != null && filled > 0 ? { avg: +(side === "yes" ? avgYes : 1 - avgYes).toFixed(4) } : {}), ...(fee != null && filled > 0 ? { feeEach: fee } : {}) };
 }
-export { lastTrade, yesFromMarket, quoteFromBook, paperDecide, paperSim, paperBreakdown, paperDaily, liveResult, liveAccount, liveGate, liveSize, parseBalance, parseFilled, parseFills, snapPrice, liveOrderBody, liveOrderResult };
+export { lastTrade, yesFromMarket, quoteFromBook, paperDecide, paperSim, paperBreakdown, paperDaily, liveResult, liveAccount, liveGate, liveSize, parseBalance, parseShardBalances, shardBalance, parseFilled, parseFills, snapPrice, liveOrderBody, liveOrderResult };
 export async function fetchBook(coin) {
   if (Date.now() >= cbBackoff.until) {
     try {
