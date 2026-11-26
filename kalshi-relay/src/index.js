@@ -22,7 +22,7 @@ async function route(req, env) {
       return stub.fetch(req);
     }
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
-    if (["/status", "/vapid", "/subscribe", "/unsubscribe", "/signals", "/test-push", "/results", "/paper", "/live", "/live/stop", "/live/resume", "/quote", "/trade", "/manual"].includes(url.pathname)) return stub.fetch(req);
+    if (["/status", "/vapid", "/subscribe", "/unsubscribe", "/signals", "/test-push", "/results", "/paper", "/live", "/live/stop", "/live/resume", "/quote", "/trade", "/manual", "/desklog"].includes(url.pathname)) return stub.fetch(req);
     return new Response("Kalshi relay is running. Connect the app to /ws.\n", { headers: { "content-type": "text/plain" } });
   }
 }
@@ -155,7 +155,8 @@ export class Relay extends DurableObject {
     st.cps++; st.at = Math.floor(Date.now() / 1000);
     let bq = null, err = "";
     try { bq = await this.kalshiBook("BTC-USD", close); } catch (e) { err = String(e.message || e); }
-    if (!bq || bq.bid == null || bq.ask == null) { st.bookFail++; if (err) st.lastErr = err.slice(0, 160); await this.ctx.storage.put("paperstat3", st); return null; }
+    if (!bq || bq.bid == null || bq.ask == null) { st.bookFail++; if (err) st.lastErr = err.slice(0, 160); await this.ctx.storage.put("paperstat3", st);
+      await this.deskLog({ kind: "ERROR", what: `${T / 60}-min check`, why: "no live Kalshi quote" + (err ? ": " + err.slice(0, 80) : "") }); return null; }
     st.book++; if (bq.bidSize != null && bq.askSize != null) st.sized++;
     if (listQ && listQ.yes != null) { const d = Math.abs(listQ.yes - bq.yes); st.diffN++; st.diffSum = +(st.diffSum + d).toFixed(4); if (d > 0.05) st.diff5++;
       st.lastCmp = { at: Math.floor(Date.now() / 1000), t: T, list: [listQ.bid, listQ.ask], book: [bq.bid, bq.ask], bookSize: [bq.bidSize, bq.askSize] };
@@ -165,8 +166,14 @@ export class Relay extends DurableObject {
     if (Date.now() - this.bootAt < PAPER_WARMUP_MS) { st.warmup++; skip = "warmup"; }
     else if (bq.ms > PAPER_MAX_QUOTE_MS || ixAge > PAPER_MAX_INDEX_AGE) { st.stale++; skip = "stale"; }
     await this.ctx.storage.put("paperstat3", st);
-    if (skip) return bq;
-    await this.paperBet(close, T, sm.p, bq, { listYes: listQ ? listQ.yes : null, ms: bq.ms, ixAge: +ixAge.toFixed(1) });   // model only
+    const chk = `${T / 60}-min check`;
+    if (skip === "warmup") { await this.deskLog({ kind: "SKIP", what: chk, why: "relay warming up (20 min after a restart)" }); return bq; }
+    if (skip) { await this.deskLog({ kind: "SKIP", what: chk, why: bq.ms > PAPER_MAX_QUOTE_MS ? `quote too slow (${bq.ms} ms)` : `index data ${Math.round(ixAge)} s old` }); return bq; }
+    const pb = await this.paperBet(close, T, sm.p, bq, { listYes: listQ ? listQ.yes : null, ms: bq.ms, ixAge: +ixAge.toFixed(1) });   // model only
+    if (pb && pb.status === "noedge") await this.deskLog({ kind: "SKIP", what: `${chk} · model ${fmtPct(sm.p)} UP`,
+      why: `best edge ${fmtPts(pb.e.edge)} (${pb.e.side.toUpperCase()} @ ${fmtC(pb.e.price)}) after fee + slippage < ${fmtPts(PAPER_MIN_EDGE)}` });
+    if (pb && pb.status === "bet") await this.deskLog({ kind: "PAPER", what: `${pb.d.side.toUpperCase()} @ ${fmtC(pb.d.price)} · ${chk}`,
+      why: `model ${fmtPct(pb.d.q)} vs market ${fmtC(pb.d.price)} · edge +${fmtPts(pb.d.edge)}` });
     try { await this.liveMaybeTrade(close, T, sm.p, bq); } catch (e) { const ls = await this.liveState(); ls.lastErr = "trade: " + String(e.message || e).slice(0, 200); ls.lastErrAt = Math.floor(Date.now() / 1000); await this.ctx.storage.put("live", ls); }
     return bq;
   }
@@ -209,14 +216,14 @@ export class Relay extends DurableObject {
     const d = paperDecide(q, quote.bid, quote.ask, quote.askSize, quote.bidSize); if (!d) return;
     const st = await this.liveState();
     if (st.orders.some(o => o.close === close)) return;                                   // one order per window
-    const block = liveGate(st, cfg, Date.now()); if (block) { st.lastSkip = block; await this.ctx.storage.put("live", st); return; }
+    const block = liveGate(st, cfg, Date.now()); if (block) { st.lastSkip = block; await this.ctx.storage.put("live", st); await this.deskLog({ kind: "HOLD", what: `live ${d.side.toUpperCase()} @ ${fmtC(d.price)}`, why: block }); return; }
     const acct = liveAccount(st, cfg);
     let balance = null; try { balance = shardBalance(await this.liveBalance(), quote.shard); } catch (e) { st.lastErr = "balance: " + String(e.message || e).slice(0, 160); st.lastErrAt = Math.floor(Date.now() / 1000); }
     const count = liveSize(acct.equity, Math.min(acct.available, balance == null ? 0 : balance), d, cfg.maxStake);
     if (count < 1) {
       st.lastSkip = balance == null ? "couldn't read the Kalshi balance"
         : balance < d.price + kalshiFee(d.price) ? `only $${balance.toFixed(2)} on Kalshi's ${shardName(quote.shard)} shard, not enough for one contract` : "stake too small for one contract";
-      await this.ctx.storage.put("live", st); return;
+      await this.ctx.storage.put("live", st); await this.deskLog({ kind: "HOLD", what: `live ${d.side.toUpperCase()} @ ${fmtC(d.price)}`, why: st.lastSkip }); return;
     }
     const id = `walls-${close}-${T}`, body = liveOrderBody(quote.ticker, id, d.side, d.price, count, quote.ranges);
     const o = { id, close, t: T, ticker: quote.ticker, side: d.side, limit: body.limitOurSide, count, q: d.q, edge: d.edge, at: Math.floor(Date.now() / 1000), status: "sending" };
@@ -227,6 +234,10 @@ export class Relay extends DurableObject {
       Object.assign(o, liveOrderResult(res, d.side)); st.lastErr = ""; st.lastErrAt = 0;
     } catch (e) { o.status = "error"; o.error = String(e.message || e).slice(0, 200); o.filled = 0; st.lastErr = o.error; st.lastErrAt = Math.floor(Date.now() / 1000); }
     await this.ctx.storage.put("live", st);
+    const what = `${o.side.toUpperCase()} ×${o.count} @ ${fmtC(o.limit)}`;
+    if (o.status === "error") await this.deskLog({ kind: "ERROR", what: "live " + what, why: o.error.replace(/^Kalshi POST \S+ /, "") });
+    else if (o.filled > 0) await this.deskLog({ kind: "BET", what: `${o.side.toUpperCase()} ×${o.filled} @ ${fmtC(o.avg != null ? o.avg : o.limit)}`, why: `model ${fmtPct(o.q)} · edge +${fmtPts(o.edge)} · real money` });
+    else await this.deskLog({ kind: "MISS", what: "live " + what, why: "not filled: price moved past the limit · nothing spent" });
   }
   async liveSettle() { return this.settleOrders("live"); }
   async settleOrders(key) {            // settle "live" (bot) or "manual" (app) orders from Kalshi's results and our fills
@@ -240,6 +251,8 @@ export class Relay extends DurableObject {
       if (!done.has(o.close)) continue;
       try { const f = parseFills(await this.kalshiTrade("GET", `/trade-api/v2/portfolio/fills?ticker=${encodeURIComponent(o.ticker)}`), o.side); if (f) { o.filled = f.count; o.avg = f.avg; if (f.fee != null) o.feeTotal = f.fee; } } catch (e) { o.fillErr = String(e.message || e).slice(0, 120); }
       o.out = done.get(o.close); Object.assign(o, liveResult(o));
+      if (o.filled > 0) await this.deskLog({ kind: "SETTLE", what: `${key === "manual" ? "app " : ""}${o.side.toUpperCase()} ×${o.filled} · closed ${o.out.toUpperCase()}`,
+        why: `${o.won ? "won" : "lost"} · Kalshi fee $${(o.fee || 0).toFixed(2)}`, pnl: o.pnl });
     }
     await this.ctx.storage.put(key, st);
   }
@@ -292,6 +305,8 @@ export class Relay extends DurableObject {
     catch (e) { o.status = "error"; o.error = String(e.message || e).slice(0, 200); o.filled = 0; }
     this.balCache = null;                       // money moved (or may have): read the balance fresh next time
     await this.ctx.storage.put("manual", st);
+    await this.deskLog(o.status === "error" ? { kind: "ERROR", what: `app BUY ${side === "yes" ? "UP" : "DOWN"}`, why: String(o.error || "").replace(/^Kalshi POST \S+ /, "") }
+      : { kind: "APP", what: `BUY ${side === "yes" ? "UP" : "DOWN"} ×${o.filled || 0} @ ${fmtC(o.avg != null ? o.avg : o.limit)}`, why: o.filled > 0 ? "your tap · filled" : "your tap · not filled, nothing spent" });
     return { ok: o.status !== "error", order: o, error: o.error };
   }
   async manualReport() {
@@ -338,11 +353,17 @@ export class Relay extends DurableObject {
   // ---- paper trading (BTC only, no real money): what a bot following the model would have done, with Kalshi fees.
   async paperBet(close, T, q, quote, audit = {}) {
     const d = paperDecide(q, quote.bid, quote.ask, quote.askSize, quote.bidSize);
-    if (!d) return;
+    if (!d) { const e = paperEdge(q, quote.bid, quote.ask); return e ? { status: "noedge", e } : null; }
     const k = PAPER_KEY, bets = (await this.ctx.storage.get(k)) || [];
-    if (bets.some(b => b.close === close)) return;                       // at most one bet per window: the first checkpoint with an edge
+    if (bets.some(b => b.close === close)) return { status: "dup" };     // at most one bet per window: the first checkpoint with an edge
     bets.push({ close, t: T, ...d, bid: quote.bid, ask: quote.ask, ...audit, out: null });
     await this.ctx.storage.put(k, bets.filter(b => b.close > Date.now() / 1000 - 14 * 86400).slice(-1500));
+    return { status: "bet", d };
+  }
+  async deskLog(e) {                   // the Desk's decision log: every bet, skip, fill and settlement, with the reason
+    const l = (await this.ctx.storage.get("desklog")) || [];
+    l.push({ t: Math.floor(Date.now() / 1000), ...e });
+    await this.ctx.storage.put("desklog", l.slice(-300));
   }
   async paperSettle() {
     const k = PAPER_KEY, bets = (await this.ctx.storage.get(k)) || [], now = Date.now() / 1000;
@@ -433,13 +454,14 @@ export class Relay extends DurableObject {
         pushDevices: subs.size, signals: this.sigErr ? { error: this.sigErr } : Object.fromEntries([...this.sigState].map(([k, v]) => [k, v.ema != null ? Math.round(v.ema * 100) + "% buyers" : "–"])) });
     }
     if (url.pathname === "/vapid") return json({ key: (await this.vapid()).pub });
-    if (url.pathname === "/subscribe" || url.pathname === "/unsubscribe" || url.pathname === "/signals" || url.pathname === "/test-push" || url.pathname === "/results" || url.pathname === "/paper" || url.pathname.startsWith("/live") || url.pathname === "/quote" || url.pathname === "/trade" || url.pathname === "/manual") {
+    if (url.pathname === "/subscribe" || url.pathname === "/unsubscribe" || url.pathname === "/signals" || url.pathname === "/test-push" || url.pathname === "/results" || url.pathname === "/paper" || url.pathname.startsWith("/live") || url.pathname === "/quote" || url.pathname === "/trade" || url.pathname === "/manual" || url.pathname === "/desklog") {
       const auth = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
       if (!this.env.RELAY_CODE || auth !== this.env.RELAY_CODE) return json({ error: "wrong access code" }, 403);
       if (url.pathname === "/paper") return json(await this.paperReport());
       if (url.pathname === "/live") return json(await this.liveReport());
       if (url.pathname === "/quote") return json(await this.appQuote(url.searchParams.get("coin") || "BTC-USD"));
       if (url.pathname === "/manual") return json(await this.manualReport());
+      if (url.pathname === "/desklog") { const l = (await this.ctx.storage.get("desklog")) || []; return json({ log: l.slice(-60).reverse() }); }
       if (url.pathname === "/trade") {
         if (req.method !== "POST") return json({ error: "use POST" }, 405);
         let b = {}; try { b = await req.json(); } catch {}
@@ -625,7 +647,7 @@ function lastTrade(j) {
   return best;
 }
 let LIVE_RETRY_MS = 1000;
-const RELAY_VERSION = "2026-11-25.appbuy";   // shown on /status; bump on relay changes
+const RELAY_VERSION = "2026-11-26.desk";   // shown on /status; bump on relay changes
 export function _setLiveRetryMs(ms) { LIVE_RETRY_MS = ms; }   // tests only
 // Kalshi order book -> Yes quote. The book lists bids only: best Yes ask = 1 - best No bid. Dollar or cent fields.
 function quoteFromBook(j) {
@@ -652,6 +674,14 @@ function paperDecide(q, bid, ask, askSize, bidSize) {
   if (!(b.edge >= PAPER_MIN_EDGE) || b.cost >= 1) return null;
   return { side: b.side, price: +b.price.toFixed(3), fee: +b.fee.toFixed(4), q: +b.q.toFixed(3), edge: +b.edge.toFixed(3), kelly: +(b.edge / (1 - b.cost) / 2).toFixed(4), depth: b.depth };   // half Kelly
 }
+// The best side and its edge even when it's too small to bet (for the Desk's log).
+function paperEdge(q, bid, ask) {
+  if (bid == null || ask == null || !(ask > 0) || !(bid >= 0) || bid > ask) return null;
+  const yesP = Math.min(0.99, ask + PAPER_SLIP), noP = Math.min(0.99, 1 - bid + PAPER_SLIP);
+  const ey = q - (yesP + kalshiFee(yesP)), en = (1 - q) - (noP + kalshiFee(noP));
+  return ey >= en ? { side: "yes", edge: +ey.toFixed(3), price: +yesP.toFixed(3) } : { side: "no", edge: +en.toFixed(3), price: +noP.toFixed(3) };
+}
+const fmtPct = x => Math.round(x * 100) + "%", fmtC = x => (Math.round(x * 1000) / 10) + "¢", fmtPts = x => (Math.round(x * 1000) / 10).toFixed(1) + " pts";
 function paperFill(b, stake) {            // contracts bought and resulting profit for one settled bet
   const cost = b.price + b.fee, depth = b.depth != null ? b.depth : PAPER_DEPTH;
   const contracts = Math.max(0, Math.min(stake / cost, depth)), won = (b.side === "yes") === (b.out === "up");
@@ -791,7 +821,7 @@ function liveOrderResult(res, side) { // V2 create-order response -> our order r
   return { orderId: res.order_id || null, filled, status: filled > 0 ? (rem > 0 ? "partly filled" : "filled") : "not filled",
     ...(avgYes != null && filled > 0 ? { avg: +(side === "yes" ? avgYes : 1 - avgYes).toFixed(4) } : {}), ...(fee != null && filled > 0 ? { feeEach: fee } : {}) };
 }
-export { lastTrade, yesFromMarket, quoteFromBook, paperDecide, paperSim, paperBreakdown, paperDaily, liveResult, liveAccount, liveGate, liveSize, parseBalance, parseShardBalances, shardBalance, manualSpentToday, parseFilled, parseFills, snapPrice, liveOrderBody, liveOrderResult };
+export { paperEdge, lastTrade, yesFromMarket, quoteFromBook, paperDecide, paperSim, paperBreakdown, paperDaily, liveResult, liveAccount, liveGate, liveSize, parseBalance, parseShardBalances, shardBalance, manualSpentToday, parseFilled, parseFills, snapPrice, liveOrderBody, liveOrderResult };
 export async function fetchBook(coin) {
   if (Date.now() >= cbBackoff.until) {
     try {

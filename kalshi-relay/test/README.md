@@ -9,3 +9,4 @@
     node test/paper.test.mjs  # paper trading: bet decision, sizing, replay
     node test/live.test.mjs   # live trading: sizing, safety gates, signed orders, settlement, stop/resume (mocked Kalshi)
     node test/manual.test.mjs # app quote + BUY UP/DOWN: caps, price guard, shard balance, settlement (mocked Kalshi)
+    node test/desk.test.mjs   # Desk decision log: skips with reasons, paper/live bets, holds, settlements, app buys, /desklog route

@@ -182,6 +182,62 @@
   .buy:disabled { opacity: .45; cursor: not-allowed; }
   .tmsg { margin-top: 8px; font-size: 12px; height: 16px; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .tmsg.ok { color: var(--up); } .tmsg.bad { color: var(--down); }
+  /* ---------- Desk: full-screen trading desk view ---------- */
+  .deskbtn { font-size: 12px; padding: 4px 10px; background: #123326; border-color: #1e5a45; color: var(--up); }
+  #desk { position: fixed; inset: 0; z-index: 40; overflow-y: auto; -webkit-overflow-scrolling: touch; background: #0a0f0d; color: #dfe7e3;
+    font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; -webkit-user-select: text; user-select: text;
+    padding: max(16px, calc(env(safe-area-inset-top) + 14px)) max(16px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
+  #desk[hidden] { display: none; }
+  .dk { max-width: 1360px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+  .dk-top { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 24px; }
+  .dk-brand { display: flex; align-items: center; gap: 14px; flex: 1 1 320px; min-width: 0; }
+  .dk-logo { width: 52px; height: 52px; flex: none; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #1f3a30, #0d1714); border: 2px solid #2b4a3e; color: var(--up); display: flex; align-items: center; justify-content: center; }
+  .dk-title { margin: 0; font: 700 30px/1.05 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: -.01em; }
+  .dk-title span { color: var(--up); }
+  .dk-sub { margin-top: 5px; font-size: 12px; color: #9aaba4; }
+  .dk-pot { text-align: right; }
+  .dk-pot small { display: block; font-size: 11px; letter-spacing: .14em; color: #7f918a; }
+  .dk-pot b { font: 700 42px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-variant-numeric: tabular-nums; }
+  .dk-close { min-height: 44px; padding: 8px 16px; border-radius: 12px; font-weight: 700; }
+  .dk-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 16px; }
+  .dk-card { border: 1px solid #1e2b26; border-radius: 16px; background: #0d1412; padding: 16px; min-width: 0; }
+  .dk-h { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; letter-spacing: .06em; margin-bottom: 12px; }
+  .dk-round-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .dk-big { font: 700 28px/1.1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-variant-numeric: tabular-nums; }
+  .dk-line { font: 700 26px/1.15 ui-monospace, SFMono-Regular, Menlo, monospace; margin-top: 4px; }
+  .dk-spark { width: 100%; height: 120px; margin-top: 12px; display: block; border-radius: 10px; background: #0b100f; }
+  .dk-callout { margin-top: 12px; padding: 12px; border-radius: 12px; border: 2px solid #1e2b26; }
+  .dk-tag { padding: 2px 7px; border-radius: 4px; font-weight: 700; color: #0a0f0d; }
+  .dk-hub { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+  .dk-hubc { width: 86px; height: 86px; flex: none; border-radius: 50%; border: 2px solid var(--up); background: radial-gradient(circle at 35% 30%, #1f3a30, #0d1714);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; box-shadow: 0 0 0 10px rgba(61,220,151,.05); }
+  .dk-hubc b { font: 700 22px/1 -apple-system, BlinkMacSystemFont, sans-serif; }
+  .dk-hubc small { font-size: 10px; color: #9aaba4; }
+  .dk-pipe { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .dk-node { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; background: #111a17; border: 1px solid #1e2b26; min-width: 0; }
+  .dk-node i { width: 30px; height: 30px; flex: none; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-style: normal; font-weight: 700; }
+  .dk-node b { display: block; font-size: 12px; letter-spacing: .04em; }
+  .dk-node span { display: block; font-size: 11px; color: #9aaba4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dk-log { display: flex; flex-direction: column; gap: 10px; max-height: 520px; overflow-y: auto; }
+  .dk-le .r1 { display: flex; gap: 8px; }
+  .dk-le .r1 .w { flex: 1; min-width: 0; }
+  .dk-le .r2 { color: #8a9c95; font-size: 12px; padding-left: 14px; }
+  .dk-score { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .dk-tile { padding: 10px 12px; border-radius: 10px; background: #111a17; }
+  .dk-tile small { display: block; font-size: 11px; color: #9aaba4; }
+  .dk-tile b { display: block; margin-top: 2px; font: 700 20px/1.2 -apple-system, BlinkMacSystemFont, sans-serif; font-variant-numeric: tabular-nums; }
+  .dk-tile span { font-size: 10.5px; color: #7f918a; }
+  #dkBtn button { margin-top: 12px; width: 100%; min-height: 48px; border-radius: 12px; font-weight: 700; font-size: 14px; }
+  @media (max-width: 900px) {
+    .dk-grid { grid-template-columns: minmax(0, 1fr); }
+    .dk-title { font-size: 24px; } .dk-pot b { font-size: 34px; } .dk-line { font-size: 22px; }
+    .dk-brand { flex: 1 1 200px; } .dk-close { flex: none; }
+    .dk-pot { order: 3; flex: 1 1 100%; text-align: left; padding: 12px 14px; border-radius: 14px; background: #0d1412; border: 1px solid #1e2b26; }
+    .dk-pipe { grid-template-columns: minmax(0, 1fr); gap: 0; }
+    .dk-pipe .dk-node { background: none; border: 0; padding: 4px 0; }
+    .dk-pipe .dk-node + .dk-node { border-top: 0; }
+    .dk-log { max-height: none; }
+  }
   /* ---------- phones (portrait or landscape) ---------- */
   @media (max-width: 700px), (max-height: 500px) {
     header { position: relative; flex-wrap: nowrap; gap: 12px; padding: 6px 10px;
@@ -312,7 +368,7 @@
   </div>
   <div class="rrow2"><span class="rpx">Up <b id="rUp" class="up">—</b> · Down <b id="rDown" class="down">—</b></span>
     <button type="button" id="rLastBtn" class="rlast" title="Past 15-minute results"><span class="hint">Last</span> <span id="rLast" class="sq"></span></button>
-    <span style="flex:1"></span><button type="button" id="rZoom">This round</button></div>
+    <span style="flex:1"></span><button type="button" id="rDesk" class="deskbtn">Desk</button><button type="button" id="rZoom">This round</button></div>
 </section>
 <div id="wrap"><canvas id="cv"></canvas><div id="tip"></div>
   <div id="help">Scroll = zoom time · Shift+scroll or scroll on price axis = zoom price · Drag = pan · Drag order-book edge = resize · Double-click = reset</div></div>
@@ -325,6 +381,24 @@
   <div id="tMsg" class="tmsg hint">Each contract pays $1 if its side wins. Tap a button twice to buy.</div>
 </section>
 <div id="walls"><span class="hint">Connecting to Coinbase…</span></div>
+<div id="desk" hidden>
+  <div class="dk">
+    <div class="dk-top">
+      <div class="dk-brand">
+        <div class="dk-logo" aria-hidden="true"><svg width="30" height="30" viewBox="0 0 34 34" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 24 L11 14 L17 19 L24 8 L30 13"></path></svg></div>
+        <div><h2 class="dk-title">Walls <span>Trading Desk</span></h2><div id="dkSub" class="dk-sub">—</div></div>
+      </div>
+      <div class="dk-pot"><small>BOT POT</small><b id="dkPot">—</b><div id="dkPotSub" class="dk-sub"></div></div>
+      <button type="button" id="dkClose" class="dk-close">Chart</button>
+    </div>
+    <div class="dk-grid">
+      <section class="dk-card" aria-label="Current round" id="dkRound"></section>
+      <section class="dk-card" aria-label="Signal engine" id="dkEngine"></section>
+      <section class="dk-card dk-logcard" aria-label="Decision log"><div class="dk-h"><span>$ tail -f walls-bot.log</span><span class="hint">every reason</span></div><div id="dkLog"></div></section>
+      <section class="dk-card" aria-label="Scoreboard"><div class="dk-h"><span>SCOREBOARD</span><span id="dkUpd" class="hint"></span></div><div id="dkScore" class="dk-score"></div><div id="dkBtn"></div></section>
+    </div>
+  </div>
+</div>
 <div id="resDlg" class="modal" hidden>
   <div class="dlg wide">
     <div class="row" style="align-items:center"><h3 id="resTitle">Past 15-minute results</h3><span style="flex:1"></span><button type="button" id="resClose">Close</button></div>
@@ -842,7 +916,7 @@ async function liveCtl(what) {
     const r = await fetch(`${relayBase()}/live/${what}`, { method: "POST", headers: { authorization: "Bearer " + OFF.code } });
     if (r.ok) RES.live = await r.json(); else alert("The relay didn't accept that (HTTP " + r.status + ").");
   } catch (err) { alert("Couldn't reach the relay: " + err.message); }
-  renderResults();
+  renderResults(); if (typeof renderDesk === "function") renderDesk();
 }
 document.addEventListener("click", e => { const b = e.target.closest && e.target.closest("[data-live]"); if (b) liveCtl(b.dataset.live); });
 function paperHtml() {
@@ -1454,6 +1528,98 @@ $("rZoom").onclick = () => {        // fit the current 15-minute round: 10 s can
   if (S.last) { S.v.rangeT = clamp(Math.max(d * 1.6, S.last * 0.0006) / S.last, 0.0008, 0.12); $("range").value = ""; }
 };
 setInterval(pollQuote, 2000);
+// ---- Desk: one screen for the bot. Data: the relay's results/paper/live reports, the live quote and the decision log.
+const DK = { open: false, log: [], logAt: 0, resAt: 0 };
+const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const usd2 = x => x == null ? "—" : (x < 0 ? "−$" : "$") + Math.abs(x).toFixed(2), sgn2 = x => (x >= 0 ? "+" : "−") + "$" + Math.abs(x || 0).toFixed(2);
+const KIND_COL = { BET: "#3ddc97", PAPER: "#b49cff", SKIP: "#6aa8ff", HOLD: "#f2c057", MISS: "#9aaba4", SETTLE: "#f2c057", ERROR: "#ff8295", APP: "#5fd4e8" };
+async function loadDeskLog() { DK.logAt = Date.now(); try { DK.log = (await relayGet("/desklog")).log || []; } catch {} }
+function openDesk() {
+  DK.open = true; $("desk").hidden = false; document.body.classList.remove("settings");
+  if (S.product !== "BTC-USD") { $("product").value = "BTC-USD"; $("product").dispatchEvent(new Event("change")); }
+  loadResults(true).then(renderDesk); loadDeskLog().then(renderDesk); renderDesk();
+}
+function closeDesk() { DK.open = false; $("desk").hidden = true; }
+$("rDesk").onclick = openDesk; $("dkClose").onclick = closeDesk;
+setInterval(() => { if (!DK.open) return;
+  if (Date.now() - DK.logAt > 15000) loadDeskLog();
+  if (Date.now() - (RES.at || 0) > 30000) loadResults(true);
+  renderDesk(); }, 1000);
+function deskEdges(p, q) {        // same maths as the bot: buy at the ask + 1c, Kalshi fee, edge = our chance minus all-in cost
+  if (p == null || !q || q.up == null || q.down == null) return null;
+  const fee = x => 0.07 * x * (1 - x), up = Math.min(0.99, q.up + 0.01), dn = Math.min(0.99, q.down + 0.01);
+  const eu = p - (up + fee(up)), ed = (1 - p) - (dn + fee(dn));
+  return eu >= ed ? { side: "UP", edge: eu, price: q.up } : { side: "DOWN", edge: ed, price: q.down };
+}
+function sparkSvg(kw) {
+  const open = kw.close15 - 900, pts = IX.sec.filter(x => x.t >= open), tgt = kw.target;
+  if (pts.length < 2) return '<svg class="dk-spark" viewBox="0 0 300 120" aria-hidden="true"></svg>';
+  let lo = Math.min(...pts.map(x => x.v)), hi = Math.max(...pts.map(x => x.v));
+  if (tgt) { lo = Math.min(lo, tgt); hi = Math.max(hi, tgt); }
+  const pad = (hi - lo) * 0.15 || 1; lo -= pad; hi += pad;
+  const X = t => ((t - open) / 900 * 300).toFixed(1), Y = v => (110 - (v - lo) / (hi - lo) * 100).toFixed(1);
+  const line = pts.map(x => X(x.t) + "," + Y(x.v)).join(" "), last = pts[pts.length - 1], col = tgt && last.v < tgt ? "#ff8295" : "#3ddc97";
+  return `<svg class="dk-spark" viewBox="0 0 300 120" preserveAspectRatio="none" role="img" aria-label="Index this round">` +
+    (tgt ? `<line x1="0" x2="300" y1="${Y(tgt)}" y2="${Y(tgt)}" stroke="#f2c057" stroke-width="1.2" stroke-dasharray="5 4" vector-effect="non-scaling-stroke"></line>` : "") +
+    `<polyline points="${line}" fill="none" stroke="${col}" stroke-width="2" vector-effect="non-scaling-stroke"></polyline>` +
+    `<circle cx="${X(last.t)}" cy="${Y(last.v)}" r="3" fill="${col}"></circle></svg>`;
+}
+function renderDesk() {
+  if (!DK.open) return;
+  const L = RES.live, P = RES.paper, st = P && P.stats || {}, kw = S.kw || kalshiWindows(), q = quoteNow();
+  const p = $("kOdds")._pc != null ? $("kOdds")._pc : null;
+  // header
+  const running = L && L.on && L.hasKey && !L.halted && !L.gate;
+  $("dkSub").innerHTML = `<span style="color:${running ? "#3ddc97" : "#f2c057"}">●</span> ${running ? "live" : L && L.halted ? "stopped" : L && L.on ? "paused" : "paper only"} · Kalshi KXBTC15M · settle-aware model · ${L && L.horizons ? L.horizons.map(h => h / 60 + "-min").join(", ") : "5-min"} checkpoint`;
+  $("dkPot").textContent = L ? usd2(L.equity) : "—";
+  $("dkPotSub").innerHTML = L ? `<span style="color:${(L.realized || 0) >= 0 ? "#3ddc97" : "#ff8295"}">${sgn2(L.realized)}</span> from ${usd2(L.budget)} · ${L.filledBets || 0} filled · <span style="color:#3ddc97">${L.wins || 0}W</span>/<span style="color:#ff8295">${(L.filledBets || 0) - (L.wins || 0)}L</span>` : "connect your relay to see the bot";
+  // round
+  const cd = Math.max(0, Math.floor(kw.close15 - kw.now)), d = kw.target && S.last ? S.last - kw.target : null;
+  const e = deskEdges(p, q), open15 = kw.close15 - 900, mine = DK.log.filter(x => x.t >= open15 && /BET|PAPER|SKIP|HOLD|MISS|APP/.test(x.kind));
+  const latest = mine[0];
+  $("dkRound").innerHTML = `<div class="dk-round-top"><b style="font-size:15px">BTC · 15-min round</b><span class="dk-big">${Math.floor(cd / 60)}:${String(cd % 60).padStart(2, "0")}</span></div>
+    <div class="dk-line" style="color:${d == null ? "#9aaba4" : d >= 0 ? "#3ddc97" : "#ff8295"}">${d == null ? "waiting for target…" : `${d >= 0 ? "+" : "−"}$${fmtP(Math.abs(d))} ${d >= 0 ? "above" : "below"} the line`}</div>
+    <div class="dk-sub">to beat <b style="color:#f2c057">${kw.target ? "$" + fmtP(kw.target) : "—"}</b> · now <b style="color:#dfe7e3">${S.last ? "$" + fmtP(S.last) : "—"}</b> · Up <b style="color:#3ddc97">${q ? Math.round(q.up * 100) + "¢" : "—"}</b> · Down <b style="color:#ff8295">${q ? Math.round(q.down * 100) + "¢" : "—"}</b></div>
+    ${sparkSvg(kw)}
+    <div class="dk-callout" style="border-color:${e && e.edge >= 0.03 ? "#3ddc97" : "#1e2b26"}">
+      <div>${e ? `<span class="dk-tag" style="background:${e.side === "UP" ? "#3ddc97" : "#ff8295"}">${e.edge >= 0.03 ? "EDGE" : "NO EDGE"}</span> best side <b>${e.side}</b> @ ${Math.round(e.price * 100)}¢ · edge <b style="color:${e.edge >= 0.03 ? "#3ddc97" : "#9aaba4"}">${(e.edge * 100).toFixed(1)} pts</b>` : '<span class="hint">waiting for the model and a live price…</span>'}</div>
+      <div class="dk-sub">bot bets at ${L && L.horizons ? L.horizons.map(h => h / 60 + " min").join(", ") : "5 min"} before the close when the edge is 3+ pts after fee and slippage</div>
+      ${latest ? `<div style="margin-top:8px"><b style="color:${KIND_COL[latest.kind] || "#dfe7e3"}">${esc(latest.kind)}</b> ${esc(latest.what)} <span class="hint">· ${esc(latest.why)}</span></div>` : ""}
+    </div>`;
+  // engine
+  const nodes = [
+    ["≈", "INDEX FEED", IX.official ? "official BRTI · live" : "estimate · relay offline", "#6aa8ff", "#16253a"],
+    ["σ", "SETTLE MODEL", p == null ? "warming up" : `odds ${p >= 0.5 ? "UP " + Math.round(p * 100) : "DOWN " + Math.round((1 - p) * 100)}%`, "#b49cff", "#241d3a"],
+    ["¢", "LIVE BOOK", st.trN ? `${(st.trBook / st.trN * 100).toFixed(1)}¢ vs ${st.trN} real trades` : "Kalshi order book", "#3ddc97", "#123326"],
+    ["!", "RISK GATE", L ? (L.halted ? "stopped" : L.gate || "clear") : "—", L && (L.halted || L.gate) ? "#ff8295" : "#3ddc97", L && (L.halted || L.gate) ? "#3a1820" : "#123326"],
+    ["÷", "SIZER", `half-Kelly · max ${Math.round(((L && L.maxStake) || 0.1) * 100)}% of pot`, "#b49cff", "#241d3a"],
+    ["↯", "EXECUTOR", "fill-or-cancel · ask + 1¢", "#3ddc97", "#123326"],
+    ["◎", "SETTLER", L ? `${L.filledBets || 0} settled · ${L.wins || 0} won` : "Kalshi results + fees", "#f2c057", "#3a2f12"],
+    ["≡", "LOGGER", `${DK.log.length} recent entries`, "#6aa8ff", "#16253a"]];
+  $("dkEngine").innerHTML = `<div class="dk-h"><span>SIGNAL ENGINE</span><span style="color:${running ? "#3ddc97" : "#f2c057"}">● ${running ? "running" : L && L.on ? "paused" : "paper only"}</span></div>
+    <div class="dk-hub"><div class="dk-hubc"><b style="color:${p == null ? "#9aaba4" : p >= 0.5 ? "#3ddc97" : "#ff8295"}">${p == null ? "—" : Math.round((p >= 0.5 ? p : 1 - p) * 100) + "%"}</b><small>${p == null ? "model" : p >= 0.5 ? "odds UP" : "odds DOWN"}</small></div>
+      <div class="dk-sub" style="margin:0">checkpoints <b style="color:#dfe7e3">${st.cps || 0}</b> · live quotes <b style="color:#dfe7e3">${st.book || 0}</b><br>paper bets <b style="color:#dfe7e3">${P ? P.settled || 0 : 0}</b> · live orders <b style="color:#dfe7e3">${L && L.orders ? L.orders.length : 0}</b></div></div>
+    <div class="dk-pipe">${nodes.map(n => `<div class="dk-node"><i style="background:${n[4]};color:${n[3]}">${n[0]}</i><div style="min-width:0"><b style="color:${n[3]}">${n[1]}</b><span>${esc(n[2])}</span></div></div>`).join("")}</div>`;
+  // log
+  const tf = new Intl.DateTimeFormat([], { hour: "numeric", minute: "2-digit" });
+  $("dkLog").innerHTML = DK.log.length ? `<div class="dk-log">${DK.log.slice(0, 40).map(x => `<div class="dk-le"><div class="r1"><span class="hint">${tf.format(new Date(x.t * 1000))}</span><b style="color:${KIND_COL[x.kind] || "#dfe7e3"};min-width:56px">${esc(x.kind)}</b><span class="w">${esc(x.what)}</span>${x.pnl != null ? `<span style="color:${x.pnl >= 0 ? "#3ddc97" : "#ff8295"}">${sgn2(x.pnl)}</span>` : ""}</div><div class="r2">↳ ${esc(x.why)}</div></div>`).join("")}</div>`
+    : '<div class="hint">No entries yet. The bot logs each 5, 3, 2 and 1-minute checkpoint once the relay has updated.</div>';
+  // scoreboard
+  const flat = P && P.sims ? P.sims.find(x => x.flat) : null, c10 = P && P.sims ? P.sims.find(x => x.cap === 0.1) : null;
+  const g5 = (RES.coin === "BTC-USD" ? RES.rows : []).map(r => ({ up: r.outcome === "up", c: (r.cps || []).find(x => x.t === 300) })).filter(x => x.c && x.c.pc != null && x.c.yes != null);
+  const br = f => g5.length ? g5.reduce((s, x) => s + (f(x.c) - (x.up ? 1 : 0)) ** 2, 0) / g5.length : null, bm = br(c => c.pc), bk = br(c => c.yes);
+  const tiles = [
+    ["Live P&L", L ? sgn2(L.realized) : "—", L ? `${L.filledBets || 0} filled · ${L.wins || 0} won` : "", L && L.realized < 0 ? "#ff8295" : "#3ddc97"],
+    ["Paper · $25 flat", flat && flat.bets ? sgn2(flat.pnl) : "—", `${P ? P.settled || 0 : 0} of 300+ bets`, flat && flat.pnl < 0 ? "#ff8295" : "#3ddc97"],
+    ["Paper · 10% compounding", c10 && c10.bets ? (c10.ret >= 0 ? "+" : "") + (c10.ret * 100).toFixed(1) + "%" : "—", c10 && c10.bets ? `worst drop −${(c10.maxDD * 100).toFixed(1)}%` : "", c10 && c10.ret < 0 ? "#ff8295" : "#3ddc97"],
+    ["Model vs Kalshi · 5 min", bm == null ? "—" : bm < bk ? "ahead" : "behind", bm == null ? "needs results" : `error ${bm.toFixed(3)} vs ${bk.toFixed(3)}`, bm != null && bm < bk ? "#3ddc97" : "#ff8295"],
+    ["Book vs real trades", st.trN ? (st.trBook / st.trN * 100).toFixed(1) + "¢ off" : "—", st.trN ? `${st.trN} trades checked` : "", "#dfe7e3"],
+    ["Crypto shard", L && L.shardBalance != null ? usd2(L.shardBalance) : "—", L && L.balance != null ? `of ${usd2(L.balance)} total` : "", L && L.shardBalance != null && L.shardBalance < 2 ? "#ff8295" : "#dfe7e3"]];
+  $("dkScore").innerHTML = tiles.map(x => `<div class="dk-tile"><small>${x[0]}</small><b style="color:${x[3]}">${x[1]}</b><span>${esc(x[2])}</span></div>`).join("");
+  $("dkUpd").textContent = RES.at ? "updated " + tf.format(new Date(RES.at)) : "";
+  const btn = L && L.on && L.hasKey ? (L.halted ? '<button type="button" data-live="resume">Resume live trading</button>' : '<button type="button" data-live="stop" style="border-color:#ff8295;color:#ff8295;background:transparent">Stop live trading now</button>') : "";
+  if ($("dkBtn").innerHTML !== btn) $("dkBtn").innerHTML = btn;
+}
 function updateHeader() {
   if (!S.last || !S.calc) return;
   const C = S.calc, c = S.candles.at(-1);
