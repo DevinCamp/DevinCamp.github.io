@@ -4,7 +4,7 @@ import fs from "fs"; import os from "os"; import path from "path"; import assert
 const src = fs.readFileSync(new URL("../src/index.js", import.meta.url), "utf8").replace(/^import .*$/m, "class DurableObject {}");
 const f = path.join(os.tmpdir(), "relay_mod_candles.mjs"); fs.writeFileSync(f, src);
 const M = await import(f);
-const { candles1m, CANDLE_STRATS, candleDecide, Relay } = M;
+const { candles1m, CANDLE_STRATS, candleDecide, luckCheck, dailyStandings, Relay } = M;
 M._setLiveRetryMs(0);
 
 // ---- 1-minute candles: closed minutes only, oldest first
@@ -91,6 +91,18 @@ globalThis.fetch = kalshi({ settledClose: past });
 const rep = await rr.paperReport();
 const mrow = rep.strategies.find(x => x.name === "momentum"); assert.equal(mrow.bets, 1); assert.equal(mrow.wins, 1); assert(mrow.pnl > 0);
 assert.equal(rep.strategies[0].name, "model"); assert.equal(rep.strategies.length, 6); assert.equal(rep.liveStrategy, "model");
+assert.equal(mrow.verdict, "too few", "1 bet is too few to judge"); assert(mrow.breakEven > 0 && mrow.breakEven < 1);
+assert.equal(rep.strategies[0].baseline, true); assert.equal(rep.strategies[0].verdict, "no bets");
+
+// luck check: break-even = average price + fee; |z| < 2 is luck, 30+ bets needed for a verdict
+const LB = (n, wins, price) => Array.from({ length: n }, (_, i) => ({ close: 1000 + i * 900, side: "yes", price, fee: 0.07 * price * (1 - price), out: i < wins ? "up" : "down" }));
+assert.equal(luckCheck([]).verdict, "no bets");
+assert.equal(luckCheck(LB(20, 20, 0.5)).verdict, "too few");
+let lc = luckCheck(LB(100, 52, 0.5)); assert.equal(lc.verdict, "luck"); assert(Math.abs(lc.breakEven - 0.5175) < 0.001);
+lc = luckCheck(LB(100, 75, 0.5)); assert.equal(lc.verdict, "edge"); assert(lc.z >= 2);
+lc = luckCheck(LB(100, 30, 0.5)); assert.equal(lc.verdict, "losing"); assert(lc.z <= -2);
+lc = luckCheck(LB(200, 40, 0.2)); assert.equal(lc.verdict, "luck", "cheap contracts winning about as often as priced");
+assert.equal(luckCheck([...LB(40, 40, 0.5), { close: 1, side: "yes", price: 0.5, fee: 0.0175, out: null }]).verdict, "edge", "open bets are ignored");
 
 // live: default (model) places nothing here; LIVE_STRATEGY=momentum places the candle bet with real money
 [rr, mem] = mk(env); calls = []; globalThis.fetch = kalshi(); await rr.checkpoints("BTC-USD", now);
@@ -100,4 +112,26 @@ assert.equal(posts().length, 1); assert.equal(posts()[0].body.side, "bid", "buys
 const lo = mem.get("live").orders[0]; assert.equal(lo.strategy, "momentum");
 assert.match((mem.get("desklog") || []).find(x => x.kind === "BET").why, /3-candle momentum/);
 [rr, mem] = mk({ ...env, LIVE_STRATEGY: "nonsense" }); assert.equal(rr.liveConfig().strategy, "model", "unknown names fall back to the model");
+// ---- daily standings push: yesterday's flat-stake P&L per strategy, best first, once per UTC day
+const D0 = Date.UTC(2026, 10, 25) / 1000, bet = (close, side, price, out) => ({ close, side, price, fee: 0.07 * price * (1 - price), out });
+const sets = { model: { label: "settle model", bets: [bet(D0 + 900, "yes", 0.5, "down")] },
+  fade: { label: "big-candle fade", bets: [bet(D0 + 900, "yes", 0.2, "up"), bet(D0 + 1800, "no", 0.3, "down"), bet(D0 - 900, "yes", 0.5, "up")] },
+  hammer: { label: "hammer / shooting star", bets: [] } };
+let ds = dailyStandings(sets, "2026-11-25");
+assert.equal(ds.rows[0].name, "fade"); assert.equal(ds.rows[0].bets, 2, "only that UTC day's bets count"); assert.equal(ds.rows[2].name, "hammer", "no bets go last");
+assert.match(ds.title, /big-candle fade leads \+\$/); assert.match(ds.body, /settle model −\$/); assert(!/hammer/.test(ds.body));
+assert.equal(dailyStandings({ hammer: sets.hammer }, "2026-11-25").title, "Paper 2026-11-25: no settled bets");
+{
+  const [r3, m3] = mk({}); const pushed = [];
+  r3.ctx.storage.list = async () => new Map([["sub:a", { sub: {}, coin: "BTC-USD", sens: "med" }]]);
+  r3.push = async (rec, msg) => { pushed.push(msg); return { ok: true, status: 201 }; };
+  m3.set("paper3:BTC-USD", sets.model.bets); m3.set("cpaper:fade", sets.fade.bets);
+  const t = D0 + 86400;                                      // 2026-11-26 00:00 UTC
+  assert.equal(await r3.dailySummary(t + 300), null, "waits until 10 minutes past the hour");
+  const got = await r3.dailySummary(t + 700); assert.equal(got.day, "2026-11-25"); assert.equal(pushed.length, 1); assert.equal(pushed[0].tag, "walls-daily");
+  assert.equal(await r3.dailySummary(t + 4000), null, "once per day"); assert.equal(pushed.length, 1);
+  assert.equal(m3.get("dailysum").day, "2026-11-25"); assert((m3.get("desklog") || []).some(x => x.kind === "DAILY"));
+  const [r4] = mk({ DAILY_SUMMARY: "off" }); assert.equal(await r4.dailySummary(t + 700), null, "DAILY_SUMMARY=off");
+  const [r5] = mk({ DAILY_SUMMARY_UTC_HOUR: "14" }); assert.equal(await r5.dailySummary(t + 700), null, "moved to 14:10 UTC");
+}
 console.log("candle strategy tests passed");
