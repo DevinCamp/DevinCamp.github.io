@@ -4,7 +4,7 @@ import fs from "fs"; import os from "os"; import path from "path"; import assert
 const src = fs.readFileSync(new URL("../src/index.js", import.meta.url), "utf8").replace(/^import .*$/m, "class DurableObject {}");
 const f = path.join(os.tmpdir(), "relay_mod_candles.mjs"); fs.writeFileSync(f, src);
 const M = await import(f);
-const { candles1m, CANDLE_STRATS, candleDecide, Relay } = M;
+const { candles1m, CANDLE_STRATS, candleDecide, luckCheck, Relay } = M;
 M._setLiveRetryMs(0);
 
 // ---- 1-minute candles: closed minutes only, oldest first
@@ -91,6 +91,18 @@ globalThis.fetch = kalshi({ settledClose: past });
 const rep = await rr.paperReport();
 const mrow = rep.strategies.find(x => x.name === "momentum"); assert.equal(mrow.bets, 1); assert.equal(mrow.wins, 1); assert(mrow.pnl > 0);
 assert.equal(rep.strategies[0].name, "model"); assert.equal(rep.strategies.length, 6); assert.equal(rep.liveStrategy, "model");
+assert.equal(mrow.verdict, "too few", "1 bet is too few to judge"); assert(mrow.breakEven > 0 && mrow.breakEven < 1);
+assert.equal(rep.strategies[0].baseline, true); assert.equal(rep.strategies[0].verdict, "no bets");
+
+// luck check: break-even = average price + fee; |z| < 2 is luck, 30+ bets needed for a verdict
+const LB = (n, wins, price) => Array.from({ length: n }, (_, i) => ({ close: 1000 + i * 900, side: "yes", price, fee: 0.07 * price * (1 - price), out: i < wins ? "up" : "down" }));
+assert.equal(luckCheck([]).verdict, "no bets");
+assert.equal(luckCheck(LB(20, 20, 0.5)).verdict, "too few");
+let lc = luckCheck(LB(100, 52, 0.5)); assert.equal(lc.verdict, "luck"); assert(Math.abs(lc.breakEven - 0.5175) < 0.001);
+lc = luckCheck(LB(100, 75, 0.5)); assert.equal(lc.verdict, "edge"); assert(lc.z >= 2);
+lc = luckCheck(LB(100, 30, 0.5)); assert.equal(lc.verdict, "losing"); assert(lc.z <= -2);
+lc = luckCheck(LB(200, 40, 0.2)); assert.equal(lc.verdict, "luck", "cheap contracts winning about as often as priced");
+assert.equal(luckCheck([...LB(40, 40, 0.5), { close: 1, side: "yes", price: 0.5, fee: 0.0175, out: null }]).verdict, "edge", "open bets are ignored");
 
 // live: default (model) places nothing here; LIVE_STRATEGY=momentum places the candle bet with real money
 [rr, mem] = mk(env); calls = []; globalThis.fetch = kalshi(); await rr.checkpoints("BTC-USD", now);

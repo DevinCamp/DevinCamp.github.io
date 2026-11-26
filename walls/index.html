@@ -139,6 +139,7 @@
   .cpt { border-collapse: collapse; margin: 8px 0 4px; font-size: 12px; font-variant-numeric: tabular-nums; }
   .cpt th { color: var(--muted); font-weight: 500; text-align: right; padding: 3px 10px 3px 0; font-size: 10.5px; }
   .cpt td { text-align: right; padding: 3px 10px 3px 0; border-top: 1px solid var(--line); }
+  .cpt td:not(:first-child) { white-space: nowrap; }
   .cpt th:first-child, .cpt td:first-child { text-align: left; }
   .cpt.cmp td, .cpt.cmp th { white-space: nowrap; font-size: 11px; padding-right: 8px; }
   /* ---------- round panel + trade bar (Kalshi mode) ---------- */
@@ -920,11 +921,15 @@ async function liveCtl(what) {
   renderResults(); if (typeof renderDesk === "function") renderDesk();
 }
 document.addEventListener("click", e => { const b = e.target.closest && e.target.closest("[data-live]"); if (b) liveCtl(b.dataset.live); });
-function stratTable(P) {         // candle strategies vs the model, $25 flat stakes on paper
+function stratTable(P) {         // candle strategies vs the model, $25 flat stakes on paper, with a luck check
   if (!P || !P.strategies || !P.strategies.length) return "";
-  const usd = x => (x >= 0 ? "+$" : "−$") + Math.abs(x).toFixed(2);
-  const rows = P.strategies.map(s => `<tr><td>${s.label}${s.name === P.liveStrategy ? ' <b style="color:var(--up)">· LIVE</b>' : ""}</td><td>${s.bets || 0}${s.open ? `<span class="hint">+${s.open}</span>` : ""}</td><td>${s.bets ? Math.round(s.wins / s.bets * 100) + "%" : "–"}</td><td class="${(s.pnl || 0) >= 0 ? "up" : "down"}">${s.bets ? usd(s.pnl) : "–"}</td></tr>`).join("");
-  return `<table class="cpt"><thead><tr><th>Strategy (paper, $25 flat)</th><th>Bets</th><th>Won</th><th>P&amp;L</th></tr></thead><tbody>${rows}</tbody></table>`;
+  const usd = x => (x >= 0 ? "+$" : "−$") + Math.abs(x).toFixed(2), pct = x => Math.round(x * 100) + "%";
+  const VERD = { edge: ["edge", "up", "won clearly more often than the prices paid imply (z ≥ 2)"], losing: ["losing", "down", "won clearly less often than break-even (z ≤ −2)"],
+    luck: ["luck", "hint", "within luck of break-even (|z| < 2): no evidence either way yet"], "too few": ["too few", "hint", "fewer than 30 settled bets"], "no bets": ["–", "hint", "no settled bets yet"] };
+  const rows = P.strategies.map(s => { const v = VERD[s.verdict] || ["–", "hint", ""];
+    return `<tr><td>${s.label}${s.baseline ? ' <span class="hint">· baseline</span>' : ""}${s.name === P.liveStrategy ? ' <b style="color:var(--up)">· LIVE</b>' : ""}</td><td>${s.bets || 0}${s.open ? `<span class="hint">+${s.open}</span>` : ""}</td><td>${s.bets ? pct(s.wins / s.bets) : "–"}</td><td class="hint">${s.breakEven != null ? pct(s.breakEven) : "–"}</td><td class="${(s.pnl || 0) >= 0 ? "up" : "down"}">${s.bets ? usd(s.pnl) : "–"}</td><td class="${v[1]}" title="${v[2]}${s.z != null ? " · z " + s.z : ""}">${v[0]}</td></tr>`; }).join("");
+  return `<table class="cpt"><thead><tr><th>Strategy (paper, $25 flat)</th><th>Bets</th><th>Won</th><th title="win rate needed to break even at the prices paid, fees included">Need</th><th>P&amp;L</th><th title="is the record better than luck?">Luck?</th></tr></thead><tbody>${rows}</tbody></table>` +
+    `<div class="hint" style="font-size:11px">Need = win rate that breaks even at the prices paid (fees included). Luck? compares Won with Need: "luck" means the gap could be chance; it takes "edge" (2 standard errors) and 30+ bets to count. The settle model row is the baseline the candle filters have to beat.</div>`;
 }
 function paperHtml() {
   if (S.product !== "BTC-USD") return "";

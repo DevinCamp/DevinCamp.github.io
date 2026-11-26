@@ -401,10 +401,11 @@ export class Relay extends DurableObject {
       strategies: await this.candleReport(), liveStrategy: this.liveConfig().strategy };
   }
   async candleReport() {
-    const out = [{ name: "model", label: "settle model", ...paperSim((await this.ctx.storage.get(PAPER_KEY)) || [], { flat: PAPER_FLAT }) }];
+    const mb = (await this.ctx.storage.get(PAPER_KEY)) || [];
+    const out = [{ name: "model", label: "settle model", baseline: true, ...paperSim(mb, { flat: PAPER_FLAT }), ...luckCheck(mb) }];
     for (const [name, S] of Object.entries(CANDLE_STRATS)) {
       const bets = (await this.ctx.storage.get("cpaper:" + name)) || [];
-      out.push({ name, label: S.label, about: S.about, open: bets.filter(b => !b.out).length, ...paperSim(bets, { flat: PAPER_FLAT }) });
+      out.push({ name, label: S.label, about: S.about, open: bets.filter(b => !b.out).length, ...paperSim(bets, { flat: PAPER_FLAT }), ...luckCheck(bets) });
     }
     return out;
   }
@@ -675,7 +676,7 @@ function lastTrade(j) {
   return best;
 }
 let LIVE_RETRY_MS = 1000;
-const RELAY_VERSION = "2026-11-26.candles";   // shown on /status; bump on relay changes
+const RELAY_VERSION = "2026-11-26.luck";   // shown on /status; bump on relay changes
 export function _setLiveRetryMs(ms) { LIVE_RETRY_MS = ms; }   // tests only
 // Kalshi order book -> Yes quote. The book lists bids only: best Yes ask = 1 - best No bid. Dollar or cent fields.
 function quoteFromBook(j) {
@@ -775,6 +776,17 @@ function paperSim(bets, opts, start = 1000, dayStop = 0.2) {
     peak = Math.max(peak, eq); maxDD = Math.max(maxDD, (peak - eq) / (opts.flat ? start : peak));
   }
   return { ...opts, bets: n, wins, equity: +eq.toFixed(2), pnl: +(eq - start).toFixed(2), ret: +(eq / start - 1).toFixed(4), roi: spent ? +((eq - start) / spent).toFixed(4) : 0, maxDD: +maxDD.toFixed(4) };
+}
+// Is a record better than luck? Break-even = the average cost (price + fee) of the settled bets, which is the win rate
+// needed to make $0. z = (win rate - break-even) / standard error; |z| < 2 is indistinguishable from luck.
+const LUCK_MIN_BETS = 30;
+function luckCheck(bets) {
+  let n = 0, w = 0, cost = 0;
+  for (const b of bets.filter(x => x.out)) { const r = paperFill(b, PAPER_FLAT); if (!(r.contracts > 0)) continue; n++; if (r.won) w++; cost += b.price + b.fee; }
+  if (!n) return { breakEven: null, z: null, verdict: "no bets" };
+  const wr = w / n, be = cost / n, se = Math.sqrt(Math.max(wr * (1 - wr), be * (1 - be)) / n), z = se > 0 ? (wr - be) / se : 0;
+  const verdict = n < LUCK_MIN_BETS ? "too few" : z >= 2 ? "edge" : z <= -2 ? "losing" : "luck";
+  return { breakEven: +be.toFixed(3), z: +z.toFixed(2), verdict };
 }
 // Flat-stake P&L per UTC day (newest first), so one lucky day can't hide behind a total.
 function paperDaily(bets) {
@@ -894,7 +906,7 @@ function liveOrderResult(res, side) { // V2 create-order response -> our order r
   return { orderId: res.order_id || null, filled, status: filled > 0 ? (rem > 0 ? "partly filled" : "filled") : "not filled",
     ...(avgYes != null && filled > 0 ? { avg: +(side === "yes" ? avgYes : 1 - avgYes).toFixed(4) } : {}), ...(fee != null && filled > 0 ? { feeEach: fee } : {}) };
 }
-export { candles1m, CANDLE_STRATS, candleDecide, paperEdge, lastTrade, yesFromMarket, quoteFromBook, paperDecide, paperSim, paperBreakdown, paperDaily, liveResult, liveAccount, liveGate, liveSize, parseBalance, parseShardBalances, shardBalance, manualSpentToday, parseFilled, parseFills, snapPrice, liveOrderBody, liveOrderResult };
+export { candles1m, luckCheck, CANDLE_STRATS, candleDecide, paperEdge, lastTrade, yesFromMarket, quoteFromBook, paperDecide, paperSim, paperBreakdown, paperDaily, liveResult, liveAccount, liveGate, liveSize, parseBalance, parseShardBalances, shardBalance, manualSpentToday, parseFilled, parseFills, snapPrice, liveOrderBody, liveOrderResult };
 export async function fetchBook(coin) {
   if (Date.now() >= cbBackoff.until) {
     try {
