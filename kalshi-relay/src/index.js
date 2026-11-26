@@ -104,6 +104,7 @@ export class Relay extends DurableObject {
     try { await this.paperSettle(); } catch (err) { errs.push("paper settle: " + err.message); }
     try { await this.liveSettle(); } catch (err) { errs.push("live settle: " + err.message); }
     try { await this.settleOrders("manual"); } catch (err) { errs.push("app orders settle: " + err.message); }
+    try { await this.dailySummary(now); } catch (err) { errs.push("daily summary: " + err.message); }
     if (errs.length) throw new Error(errs.join("; "));
   }
   // Earlier reads at 5, 3, 2 and 1 minute before each close, with Kalshi's own Yes price at the same moment, so the
@@ -398,7 +399,30 @@ export class Relay extends DurableObject {
       prev: prev.length ? paperSim(prev, { flat: PAPER_FLAT }) : null, open: bets.filter(b => !b.out).length, settled: bets.filter(b => b.out).length,
       sims: [{ flat: PAPER_FLAT }, { cap: 0.10 }, { cap: 0.20 }].map(o => paperSim(bets, o)), breakdown: paperBreakdown(bets), daily: paperDaily(bets).slice(0, 30),
       assumed: { slip: PAPER_SLIP, depth: PAPER_DEPTH, minEdge: PAPER_MIN_EDGE, flat: PAPER_FLAT },
-      strategies: await this.candleReport(), liveStrategy: this.liveConfig().strategy };
+      strategies: await this.candleReport(), liveStrategy: this.liveConfig().strategy, dailySummary: (await this.ctx.storage.get("dailysum")) || null };
+  }
+  // Once a day (default 00:10 UTC, secret DAILY_SUMMARY_UTC_HOUR moves it; DAILY_SUMMARY=off stops it): push yesterday's
+  // paper standings (model + candle strategies, $25 flat) to every push device and log it on the Desk.
+  async dailySummary(nowS) {
+    const e = this.env || {}; if (String(e.DAILY_SUMMARY || "").toLowerCase() === "off") return null;
+    const hr = Math.min(23, Math.max(0, Math.floor(num(e.DAILY_SUMMARY_UTC_HOUR) || 0)));
+    const d = new Date(nowS * 1000), secs = d.getUTCHours() * 3600 + d.getUTCMinutes() * 60 + d.getUTCSeconds();
+    if (secs < hr * 3600 + 600) return null;                       // 10 min past the hour: the day's last round has settled
+    const day = new Date((nowS - 86400) * 1000).toISOString().slice(0, 10);
+    const last = await this.ctx.storage.get("dailysum");
+    if (last && last.day >= day) return null;
+    const sets = { model: { label: "settle model", bets: (await this.ctx.storage.get(PAPER_KEY)) || [] } };
+    for (const [name, S] of Object.entries(CANDLE_STRATS)) sets[name] = { label: S.label, bets: (await this.ctx.storage.get("cpaper:" + name)) || [] };
+    const sum = dailyStandings(sets, day);
+    await this.ctx.storage.put("dailysum", { day, at: Math.floor(nowS), rows: sum.rows, text: sum.body });
+    if (!sum.rows.some(r => r.bets)) return sum;                   // nothing settled that day: no push
+    await this.deskLog({ kind: "DAILY", what: sum.title, why: sum.body });
+    const subs = await this.getSubs();
+    for (const [key, r] of subs) {
+      const res = await this.push(r, { title: sum.title, body: sum.body, tag: "walls-daily" });
+      if (res.status === 404 || res.status === 410) { subs.delete(key); await this.ctx.storage.delete(key); }
+    }
+    return sum;
   }
   async candleReport() {
     const mb = (await this.ctx.storage.get(PAPER_KEY)) || [];
@@ -676,7 +700,7 @@ function lastTrade(j) {
   return best;
 }
 let LIVE_RETRY_MS = 1000;
-const RELAY_VERSION = "2026-11-26.luck";   // shown on /status; bump on relay changes
+const RELAY_VERSION = "2026-11-26.daily";   // shown on /status; bump on relay changes
 export function _setLiveRetryMs(ms) { LIVE_RETRY_MS = ms; }   // tests only
 // Kalshi order book -> Yes quote. The book lists bids only: best Yes ask = 1 - best No bid. Dollar or cent fields.
 function quoteFromBook(j) {
@@ -787,6 +811,16 @@ function luckCheck(bets) {
   const wr = w / n, be = cost / n, se = Math.sqrt(Math.max(wr * (1 - wr), be * (1 - be)) / n), z = se > 0 ? (wr - be) / se : 0;
   const verdict = n < LUCK_MIN_BETS ? "too few" : z >= 2 ? "edge" : z <= -2 ? "losing" : "luck";
   return { breakEven: +be.toFixed(3), z: +z.toFixed(2), verdict };
+}
+// One UTC day's standings: flat-stake P&L per strategy, best first, as a push title + body.
+function dailyStandings(sets, day) {
+  const usd = x => (x >= 0 ? "+$" : "−$") + Math.abs(x).toFixed(2);
+  const rows = Object.entries(sets).map(([name, S]) => { const o = paperDaily(S.bets).find(x => x.day === day) || { bets: 0, wins: 0, pnl: 0 };
+    return { name, label: S.label, bets: o.bets, wins: o.wins, pnl: o.pnl }; }).sort((a, b) => (b.bets ? 1 : 0) - (a.bets ? 1 : 0) || b.pnl - a.pnl);
+  const active = rows.filter(r => r.bets), lead = active[0];
+  const title = lead ? `Paper ${day}: ${lead.label} leads ${usd(lead.pnl)}` : `Paper ${day}: no settled bets`;
+  const body = active.map(r => `${r.label} ${usd(r.pnl)} (${r.wins}/${r.bets})`).join(" · ") || "No strategy bet that day.";
+  return { day, rows, title, body };
 }
 // Flat-stake P&L per UTC day (newest first), so one lucky day can't hide behind a total.
 function paperDaily(bets) {
@@ -906,7 +940,7 @@ function liveOrderResult(res, side) { // V2 create-order response -> our order r
   return { orderId: res.order_id || null, filled, status: filled > 0 ? (rem > 0 ? "partly filled" : "filled") : "not filled",
     ...(avgYes != null && filled > 0 ? { avg: +(side === "yes" ? avgYes : 1 - avgYes).toFixed(4) } : {}), ...(fee != null && filled > 0 ? { feeEach: fee } : {}) };
 }
-export { candles1m, luckCheck, CANDLE_STRATS, candleDecide, paperEdge, lastTrade, yesFromMarket, quoteFromBook, paperDecide, paperSim, paperBreakdown, paperDaily, liveResult, liveAccount, liveGate, liveSize, parseBalance, parseShardBalances, shardBalance, manualSpentToday, parseFilled, parseFills, snapPrice, liveOrderBody, liveOrderResult };
+export { candles1m, luckCheck, dailyStandings, CANDLE_STRATS, candleDecide, paperEdge, lastTrade, yesFromMarket, quoteFromBook, paperDecide, paperSim, paperBreakdown, paperDaily, liveResult, liveAccount, liveGate, liveSize, parseBalance, parseShardBalances, shardBalance, manualSpentToday, parseFilled, parseFills, snapPrice, liveOrderBody, liveOrderResult };
 export async function fetchBook(coin) {
   if (Date.now() >= cbBackoff.until) {
     try {

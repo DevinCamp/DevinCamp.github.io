@@ -1545,7 +1545,7 @@ setInterval(pollQuote, 2000);
 const DK = { open: false, log: [], logAt: 0, resAt: 0 };
 const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const usd2 = x => x == null ? "—" : (x < 0 ? "−$" : "$") + Math.abs(x).toFixed(2), sgn2 = x => (x >= 0 ? "+" : "−") + "$" + Math.abs(x || 0).toFixed(2);
-const KIND_COL = { BET: "#3ddc97", PAPER: "#b49cff", CANDLE: "#e8a35f", SKIP: "#6aa8ff", HOLD: "#f2c057", MISS: "#9aaba4", SETTLE: "#f2c057", ERROR: "#ff8295", APP: "#5fd4e8" };
+const KIND_COL = { BET: "#3ddc97", PAPER: "#b49cff", CANDLE: "#e8a35f", SKIP: "#6aa8ff", HOLD: "#f2c057", MISS: "#9aaba4", SETTLE: "#f2c057", ERROR: "#ff8295", APP: "#5fd4e8", DAILY: "#c9a0ff" };
 async function loadDeskLog() { DK.logAt = Date.now(); try { DK.log = (await relayGet("/desklog")).log || []; } catch {} }
 function openDesk() {
   DK.open = true; $("desk").hidden = false; document.body.classList.remove("settings");
