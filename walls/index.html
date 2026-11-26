@@ -227,6 +227,7 @@
   .dk-tile small { display: block; font-size: 11px; color: #9aaba4; }
   .dk-tile b { display: block; margin-top: 2px; font: 700 20px/1.2 -apple-system, BlinkMacSystemFont, sans-serif; font-variant-numeric: tabular-nums; }
   .dk-tile span { font-size: 10.5px; color: #7f918a; }
+  #dkStrat .cpt { width: 100%; margin-top: 12px; }
   #dkBtn button { margin-top: 12px; width: 100%; min-height: 48px; border-radius: 12px; font-weight: 700; font-size: 14px; }
   @media (max-width: 900px) {
     .dk-grid { grid-template-columns: minmax(0, 1fr); }
@@ -395,7 +396,7 @@
       <section class="dk-card" aria-label="Current round" id="dkRound"></section>
       <section class="dk-card" aria-label="Signal engine" id="dkEngine"></section>
       <section class="dk-card dk-logcard" aria-label="Decision log"><div class="dk-h"><span>$ tail -f walls-bot.log</span><span class="hint">every reason</span></div><div id="dkLog"></div></section>
-      <section class="dk-card" aria-label="Scoreboard"><div class="dk-h"><span>SCOREBOARD</span><span id="dkUpd" class="hint"></span></div><div id="dkScore" class="dk-score"></div><div id="dkBtn"></div></section>
+      <section class="dk-card" aria-label="Scoreboard"><div class="dk-h"><span>SCOREBOARD</span><span id="dkUpd" class="hint"></span></div><div id="dkScore" class="dk-score"></div><div id="dkStrat"></div><div id="dkBtn"></div></section>
     </div>
   </div>
 </div>
@@ -919,6 +920,12 @@ async function liveCtl(what) {
   renderResults(); if (typeof renderDesk === "function") renderDesk();
 }
 document.addEventListener("click", e => { const b = e.target.closest && e.target.closest("[data-live]"); if (b) liveCtl(b.dataset.live); });
+function stratTable(P) {         // candle strategies vs the model, $25 flat stakes on paper
+  if (!P || !P.strategies || !P.strategies.length) return "";
+  const usd = x => (x >= 0 ? "+$" : "−$") + Math.abs(x).toFixed(2);
+  const rows = P.strategies.map(s => `<tr><td>${s.label}${s.name === P.liveStrategy ? ' <b style="color:var(--up)">· LIVE</b>' : ""}</td><td>${s.bets || 0}${s.open ? `<span class="hint">+${s.open}</span>` : ""}</td><td>${s.bets ? Math.round(s.wins / s.bets * 100) + "%" : "–"}</td><td class="${(s.pnl || 0) >= 0 ? "up" : "down"}">${s.bets ? usd(s.pnl) : "–"}</td></tr>`).join("");
+  return `<table class="cpt"><thead><tr><th>Strategy (paper, $25 flat)</th><th>Bets</th><th>Won</th><th>P&amp;L</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
 function paperHtml() {
   if (S.product !== "BTC-USD") return "";
   const P = RES.paper; if (!P) return "";
@@ -956,6 +963,7 @@ function paperHtml() {
   const prev = P.prev && P.prev.bets ? `<div style="font-size:11px">Previous record (market-list prices, now retired): ${P.prev.bets} bets, ${usd(P.prev.pnl)} at $${A.flat} flat stakes.</div>` : "";
   return `<div style="margin-top:10px"><b style="color:var(--text)">Paper trading · BTC · no real money · model only</b>` +
     (P.sims || []).map(one).join("") + `<div style="margin-top:4px">${diag}</div>` + lag + trv + lagLast + prev +
+    stratTable(P) + `<div style="font-size:11px">Candle strategies use 1-minute candles of the official index. A signal moves the model's odds 8 points its way, and a strategy bets only when its side then has the usual 3-point edge. Set the Cloudflare secret LIVE_STRATEGY to a strategy name (momentum, engulfing, hammer, breakout, fade) to trade it with real money; unset = the settle model.</div>` +
     (bd ? `<table class="cpt"><thead><tr><th>Where the P&amp;L comes from</th><th>Bets</th><th>Won</th><th>$${A.flat} flat P&amp;L</th></tr></thead><tbody>${bd}</tbody></table>` : "") +
     (dd ? `<table class="cpt"><thead><tr><th>Day (UTC)</th><th>Bets</th><th>Won</th><th>$${A.flat} flat P&amp;L</th></tr></thead><tbody>${dd}</tbody></table>` +
       (days.length > 1 ? `<div style="font-size:11px">Best day ${usd(best)}, worst day ${usd(worst)}.</div>` : "") : "") +
@@ -1532,7 +1540,7 @@ setInterval(pollQuote, 2000);
 const DK = { open: false, log: [], logAt: 0, resAt: 0 };
 const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const usd2 = x => x == null ? "—" : (x < 0 ? "−$" : "$") + Math.abs(x).toFixed(2), sgn2 = x => (x >= 0 ? "+" : "−") + "$" + Math.abs(x || 0).toFixed(2);
-const KIND_COL = { BET: "#3ddc97", PAPER: "#b49cff", SKIP: "#6aa8ff", HOLD: "#f2c057", MISS: "#9aaba4", SETTLE: "#f2c057", ERROR: "#ff8295", APP: "#5fd4e8" };
+const KIND_COL = { BET: "#3ddc97", PAPER: "#b49cff", CANDLE: "#e8a35f", SKIP: "#6aa8ff", HOLD: "#f2c057", MISS: "#9aaba4", SETTLE: "#f2c057", ERROR: "#ff8295", APP: "#5fd4e8" };
 async function loadDeskLog() { DK.logAt = Date.now(); try { DK.log = (await relayGet("/desklog")).log || []; } catch {} }
 function openDesk() {
   DK.open = true; $("desk").hidden = false; document.body.classList.remove("settings");
@@ -1570,7 +1578,7 @@ function renderDesk() {
   const p = $("kOdds")._pc != null ? $("kOdds")._pc : null;
   // header
   const running = L && L.on && L.hasKey && !L.halted && !L.gate;
-  $("dkSub").innerHTML = `<span style="color:${running ? "#3ddc97" : "#f2c057"}">●</span> ${running ? "live" : L && L.halted ? "stopped" : L && L.on ? "paused" : "paper only"} · Kalshi KXBTC15M · settle-aware model · ${L && L.horizons ? L.horizons.map(h => h / 60 + "-min").join(", ") : "5-min"} checkpoint`;
+  $("dkSub").innerHTML = `<span style="color:${running ? "#3ddc97" : "#f2c057"}">●</span> ${running ? "live" : L && L.halted ? "stopped" : L && L.on ? "paused" : "paper only"} · Kalshi KXBTC15M · ${esc((L && L.strategyLabel) || "settle model")} · ${L && L.horizons ? L.horizons.map(h => h / 60 + "-min").join(", ") : "5-min"} checkpoint`;
   $("dkPot").textContent = L ? usd2(L.equity) : "—";
   $("dkPotSub").innerHTML = L ? `<span style="color:${(L.realized || 0) >= 0 ? "#3ddc97" : "#ff8295"}">${sgn2(L.realized)}</span> from ${usd2(L.budget)} · ${L.filledBets || 0} filled · <span style="color:#3ddc97">${L.wins || 0}W</span>/<span style="color:#ff8295">${(L.filledBets || 0) - (L.wins || 0)}L</span>` : "connect your relay to see the bot";
   // round
@@ -1595,7 +1603,7 @@ function renderDesk() {
     ["÷", "SIZER", `half-Kelly · max ${Math.round(((L && L.maxStake) || 0.1) * 100)}% of pot`, "#b49cff", "#241d3a"],
     ["↯", "EXECUTOR", "fill-or-cancel · ask + 1¢", "#3ddc97", "#123326"],
     ["◎", "SETTLER", L ? `${L.filledBets || 0} settled · ${L.wins || 0} won` : "Kalshi results + fees", "#f2c057", "#3a2f12"],
-    ["≡", "LOGGER", `${DK.log.length} recent entries`, "#6aa8ff", "#16253a"]];
+    ["▮", "CANDLES", P && P.strategies ? `${P.strategies.length - 1} strategies on paper · live: ${(L && L.strategyLabel) || "settle model"}` : "1-min candle patterns", "#e8a35f", "#3a2814"]];
   $("dkEngine").innerHTML = `<div class="dk-h"><span>SIGNAL ENGINE</span><span style="color:${running ? "#3ddc97" : "#f2c057"}">● ${running ? "running" : L && L.on ? "paused" : "paper only"}</span></div>
     <div class="dk-hub"><div class="dk-hubc"><b style="color:${p == null ? "#9aaba4" : p >= 0.5 ? "#3ddc97" : "#ff8295"}">${p == null ? "—" : Math.round((p >= 0.5 ? p : 1 - p) * 100) + "%"}</b><small>${p == null ? "model" : p >= 0.5 ? "odds UP" : "odds DOWN"}</small></div>
       <div class="dk-sub" style="margin:0">checkpoints <b style="color:#dfe7e3">${st.cps || 0}</b> · live quotes <b style="color:#dfe7e3">${st.book || 0}</b><br>paper bets <b style="color:#dfe7e3">${P ? P.settled || 0 : 0}</b> · live orders <b style="color:#dfe7e3">${L && L.orders ? L.orders.length : 0}</b></div></div>
@@ -1616,6 +1624,7 @@ function renderDesk() {
     ["Book vs real trades", st.trN ? (st.trBook / st.trN * 100).toFixed(1) + "¢ off" : "—", st.trN ? `${st.trN} trades checked` : "", "#dfe7e3"],
     ["Crypto shard", L && L.shardBalance != null ? usd2(L.shardBalance) : "—", L && L.balance != null ? `of ${usd2(L.balance)} total` : "", L && L.shardBalance != null && L.shardBalance < 2 ? "#ff8295" : "#dfe7e3"]];
   $("dkScore").innerHTML = tiles.map(x => `<div class="dk-tile"><small>${x[0]}</small><b style="color:${x[3]}">${x[1]}</b><span>${esc(x[2])}</span></div>`).join("");
+  const stb = stratTable(P); if ($("dkStrat").innerHTML !== stb) $("dkStrat").innerHTML = stb;
   $("dkUpd").textContent = RES.at ? "updated " + tf.format(new Date(RES.at)) : "";
   const btn = L && L.on && L.hasKey ? (L.halted ? '<button type="button" data-live="resume">Resume live trading</button>' : '<button type="button" data-live="stop" style="border-color:#ff8295;color:#ff8295;background:transparent">Stop live trading now</button>') : "";
   if ($("dkBtn").innerHTML !== btn) $("dkBtn").innerHTML = btn;

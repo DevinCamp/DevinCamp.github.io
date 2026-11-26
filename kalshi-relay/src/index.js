@@ -124,12 +124,12 @@ export class Relay extends DurableObject {
     const k = "cp:" + coin, hist = (await this.ctx.storage.get(k)) || [];
     hist.push({ close, t: T, p: +sm.p.toFixed(3), pc: +sm.pc.toFixed(3), yes, book });
     await this.ctx.storage.put(k, hist.filter(x => x.close > now - 7 * 86400).slice(-1600));
-    if (coin === "BTC-USD") await this.paperCheckpoint(close, T, sm, q);
+    if (coin === "BTC-USD") await this.paperCheckpoint(close, T, sm, q, now);
   }
   // Paper bets use Kalshi's live order book for this market (not the market list, which can lag), and only when
   // both the quote and the index are fresh and the relay has been up long enough to have clean history.
-  async paperCheckpoint(close, T, sm, listQ) {
-    const bq = await this.paperCheckpointInner(close, T, sm, listQ);
+  async paperCheckpoint(close, T, sm, listQ, nowS = Date.now() / 1000) {
+    const bq = await this.paperCheckpointInner(close, T, sm, listQ, nowS);
     if (bq && bq.ticker) { try { await this.tradeCheck(bq, listQ); } catch (e) { const st = await this.ctx.storage.get("paperstat3"); if (st) { st.tradeErr = String(e.message || e).slice(0, 120); await this.ctx.storage.put("paperstat3", st); } } }
   }
   // Which quote matches real trading? Compare both against Kalshi's most recent trade (public trades feed).
@@ -149,7 +149,7 @@ export class Relay extends DurableObject {
     delete st.tradeErr;
     await this.ctx.storage.put("paperstat3", st);
   }
-  async paperCheckpointInner(close, T, sm, listQ) {
+  async paperCheckpointInner(close, T, sm, listQ, nowS = Date.now() / 1000) {
     if (!this.bootAt) this.bootAt = Date.now();
     const st = (await this.ctx.storage.get("paperstat3")) || { cps: 0, book: 0, bookFail: 0, stale: 0, warmup: 0, sized: 0, diffN: 0, diffSum: 0, diff5: 0 };
     st.cps++; st.at = Math.floor(Date.now() / 1000);
@@ -174,7 +174,14 @@ export class Relay extends DurableObject {
       why: `best edge ${fmtPts(pb.e.edge)} (${pb.e.side.toUpperCase()} @ ${fmtC(pb.e.price)}) after fee + slippage < ${fmtPts(PAPER_MIN_EDGE)}` });
     if (pb && pb.status === "bet") await this.deskLog({ kind: "PAPER", what: `${pb.d.side.toUpperCase()} @ ${fmtC(pb.d.price)} · ${chk}`,
       why: `model ${fmtPct(pb.d.q)} vs market ${fmtC(pb.d.price)} · edge +${fmtPts(pb.d.edge)}` });
-    try { await this.liveMaybeTrade(close, T, sm.p, bq); } catch (e) { const ls = await this.liveState(); ls.lastErr = "trade: " + String(e.message || e).slice(0, 200); ls.lastErrAt = Math.floor(Date.now() / 1000); await this.ctx.storage.put("live", ls); }
+    const cs = candles1m(pts, nowS, 12), cands = {};
+    for (const name of Object.keys(CANDLE_STRATS)) {
+      const r = candleDecide(name, cs, sm.p, bq); cands[name] = r;
+      if (r && r.d && await this.candleBet(name, close, T, r, bq)) await this.deskLog({ kind: "CANDLE", what: `${CANDLE_STRATS[name].label}: ${r.d.side === "yes" ? "UP" : "DOWN"} @ ${fmtC(r.d.price)} · ${chk}`,
+        why: `${r.sig.why} · model ${fmtPct(sm.p)} → ${fmtPct(r.p)} UP · edge +${fmtPts(r.d.edge)}` });
+    }
+    const strat = this.liveConfig().strategy;
+    try { await this.liveMaybeTrade(close, T, sm.p, bq, strat === "model" ? undefined : (cands[strat] && cands[strat].d) || null, strat); } catch (e) { const ls = await this.liveState(); ls.lastErr = "trade: " + String(e.message || e).slice(0, 200); ls.lastErrAt = Math.floor(Date.now() / 1000); await this.ctx.storage.put("live", ls); }
     return bq;
   }
   // ---------------- LIVE TRADING (real money, BTC only) ----------------
@@ -185,7 +192,8 @@ export class Relay extends DurableObject {
     return { on: String(e.LIVE_TRADING || "").toLowerCase() === "on", hasKey: !!(e.KALSHI_TRADE_KEY_ID && e.KALSHI_TRADE_PRIVATE_KEY),
       budget: n(e.LIVE_BUDGET, 25), maxStake: Math.min(0.2, n(e.LIVE_MAX_STAKE, 0.10)), dailyLoss: n(e.LIVE_DAILY_LOSS, 0.20),
       floor: n(e.LIVE_FLOOR, 10), maxOrdersDay: n(e.LIVE_MAX_ORDERS_DAY, 30),
-      horizons: String(e.LIVE_HORIZONS || "300").split(",").map(x => +x.trim()).filter(Boolean) };
+      horizons: String(e.LIVE_HORIZONS || "300").split(",").map(x => +x.trim()).filter(Boolean),
+      strategy: CANDLE_STRATS[String(e.LIVE_STRATEGY || "").trim()] ? String(e.LIVE_STRATEGY).trim() : "model" };
   }
   async liveState() { return (await this.ctx.storage.get("live")) || { halted: false, orders: [] }; }
   async kalshiTrade(method, path, body) {           // signed request with the TRADING key (never the feed key)
@@ -210,10 +218,10 @@ export class Relay extends DurableObject {
     try { const j = await this.kalshiTrade("GET", "/trade-api/v2/portfolio/balance"), v = { total: parseBalance(j), shards: parseShardBalances(j) }; this.balCache = { at: now, value: v }; this.balBackoff = 0; return v; }
     catch (e) { if (/HTTP 429/.test(String(e.message))) this.balBackoff = now + 60000; if (c && now - c.at < 600000) return c.value; throw e; }
   }
-  async liveMaybeTrade(close, T, q, quote) {
+  async liveMaybeTrade(close, T, q, quote, dOverride, strategy = "model") {
     const cfg = this.liveConfig();
     if (!cfg.on || !cfg.hasKey || !cfg.horizons.includes(T) || !quote.ticker) return;
-    const d = paperDecide(q, quote.bid, quote.ask, quote.askSize, quote.bidSize); if (!d) return;
+    const d = dOverride !== undefined ? dOverride : paperDecide(q, quote.bid, quote.ask, quote.askSize, quote.bidSize); if (!d) return;
     const st = await this.liveState();
     if (st.orders.some(o => o.close === close)) return;                                   // one order per window
     const block = liveGate(st, cfg, Date.now()); if (block) { st.lastSkip = block; await this.ctx.storage.put("live", st); await this.deskLog({ kind: "HOLD", what: `live ${d.side.toUpperCase()} @ ${fmtC(d.price)}`, why: block }); return; }
@@ -226,7 +234,7 @@ export class Relay extends DurableObject {
       await this.ctx.storage.put("live", st); await this.deskLog({ kind: "HOLD", what: `live ${d.side.toUpperCase()} @ ${fmtC(d.price)}`, why: st.lastSkip }); return;
     }
     const id = `walls-${close}-${T}`, body = liveOrderBody(quote.ticker, id, d.side, d.price, count, quote.ranges);
-    const o = { id, close, t: T, ticker: quote.ticker, side: d.side, limit: body.limitOurSide, count, q: d.q, edge: d.edge, at: Math.floor(Date.now() / 1000), status: "sending" };
+    const o = { id, close, t: T, ticker: quote.ticker, side: d.side, limit: body.limitOurSide, count, q: d.q, edge: d.edge, strategy, at: Math.floor(Date.now() / 1000), status: "sending" };
     delete body.limitOurSide;
     st.orders.push(o); st.orders = st.orders.slice(-500); await this.ctx.storage.put("live", st);   // record before sending: no double orders
     try {
@@ -236,7 +244,7 @@ export class Relay extends DurableObject {
     await this.ctx.storage.put("live", st);
     const what = `${o.side.toUpperCase()} ×${o.count} @ ${fmtC(o.limit)}`;
     if (o.status === "error") await this.deskLog({ kind: "ERROR", what: "live " + what, why: o.error.replace(/^Kalshi POST \S+ /, "") });
-    else if (o.filled > 0) await this.deskLog({ kind: "BET", what: `${o.side.toUpperCase()} ×${o.filled} @ ${fmtC(o.avg != null ? o.avg : o.limit)}`, why: `model ${fmtPct(o.q)} · edge +${fmtPts(o.edge)} · real money` });
+    else if (o.filled > 0) await this.deskLog({ kind: "BET", what: `${o.side.toUpperCase()} ×${o.filled} @ ${fmtC(o.avg != null ? o.avg : o.limit)}`, why: `${strategy === "model" ? "model" : CANDLE_STRATS[strategy].label + " ·"} ${fmtPct(o.q)} · edge +${fmtPts(o.edge)} · real money` });
     else await this.deskLog({ kind: "MISS", what: "live " + what, why: "not filled: price moved past the limit · nothing spent" });
   }
   async liveSettle() { return this.settleOrders("live"); }
@@ -324,7 +332,8 @@ export class Relay extends DurableObject {
     let shard = null;
     if (cfg.hasKey) { try { const b = await this.liveBalance(); balance = b.total; shard = b.shards && b.shards[CRYPTO_SHARD] != null ? b.shards[CRYPTO_SHARD] : null; } catch (e) { balErr = String(e.message || e).slice(0, 160); } }
     return { on: cfg.on, hasKey: cfg.hasKey, halted: !!st.halted, haltReason: st.haltReason || "", gate: liveGate(st, cfg, Date.now()),
-      budget: cfg.budget, maxStake: cfg.maxStake, dailyLoss: cfg.dailyLoss, floor: cfg.floor, horizons: cfg.horizons, ...acct, balance, shardBalance: shard, shardIndex: CRYPTO_SHARD, balErr,
+      budget: cfg.budget, maxStake: cfg.maxStake, dailyLoss: cfg.dailyLoss, floor: cfg.floor, horizons: cfg.horizons, strategy: cfg.strategy,
+      strategyLabel: cfg.strategy === "model" ? "settle model" : CANDLE_STRATS[cfg.strategy].label, ...acct, balance, shardBalance: shard, shardIndex: CRYPTO_SHARD, balErr,
       lastErr: st.lastErr || "", lastErrAt: st.lastErrAt || 0, lastSkip: st.lastSkip || "", orders: st.orders.slice(-20).reverse() };
   }
   async openMarket(coin, close) {
@@ -365,12 +374,22 @@ export class Relay extends DurableObject {
     l.push({ t: Math.floor(Date.now() / 1000), ...e });
     await this.ctx.storage.put("desklog", l.slice(-300));
   }
+  async candleBet(name, close, T, r, quote) {   // one paper bet per round per strategy: the first checkpoint with a signal and an edge
+    const k = "cpaper:" + name, bets = (await this.ctx.storage.get(k)) || [];
+    if (bets.some(b => b.close === close)) return false;
+    bets.push({ close, t: T, ...r.d, why: r.sig.why, p: +r.p.toFixed(3), bid: quote.bid, ask: quote.ask, out: null });
+    await this.ctx.storage.put(k, bets.filter(b => b.close > Date.now() / 1000 - 14 * 86400).slice(-1500));
+    return true;
+  }
   async paperSettle() {
-    const k = PAPER_KEY, bets = (await this.ctx.storage.get(k)) || [], now = Date.now() / 1000;
-    if (!bets.some(b => !b.out && b.close < now - 20)) return;
-    const done = new Map(); for (const m of await this.settled("KXBTC15M", 100)) { const res = String(m.result || "").toLowerCase(); if (res === "yes" || res === "no") done.set(Math.round(Date.parse(m.close_time) / 1000), res === "yes" ? "up" : "down"); }
-    let ch = false; for (const b of bets) if (!b.out && done.has(b.close)) { b.out = done.get(b.close); ch = true; }
-    if (ch) await this.ctx.storage.put(k, bets);
+    const now = Date.now() / 1000; let done = null;
+    for (const k of [PAPER_KEY, ...Object.keys(CANDLE_STRATS).map(n => "cpaper:" + n)]) {
+      const bets = (await this.ctx.storage.get(k)) || [];
+      if (!bets.some(b => !b.out && b.close < now - 20)) continue;
+      if (!done) { done = new Map(); for (const m of await this.settled("KXBTC15M", 100)) { const res = String(m.result || "").toLowerCase(); if (res === "yes" || res === "no") done.set(Math.round(Date.parse(m.close_time) / 1000), res === "yes" ? "up" : "down"); } }
+      let ch = false; for (const b of bets) if (!b.out && done.has(b.close)) { b.out = done.get(b.close); ch = true; }
+      if (ch) await this.ctx.storage.put(k, bets);
+    }
   }
   async paperReport() {
     try { await this.paperSettle(); } catch {}
@@ -378,7 +397,16 @@ export class Relay extends DurableObject {
     return { stats: (await this.ctx.storage.get("paperstat3")) || { cps: 0, book: 0, bookFail: 0, stale: 0, warmup: 0, sized: 0, diffN: 0, diffSum: 0, diff5: 0 },
       prev: prev.length ? paperSim(prev, { flat: PAPER_FLAT }) : null, open: bets.filter(b => !b.out).length, settled: bets.filter(b => b.out).length,
       sims: [{ flat: PAPER_FLAT }, { cap: 0.10 }, { cap: 0.20 }].map(o => paperSim(bets, o)), breakdown: paperBreakdown(bets), daily: paperDaily(bets).slice(0, 30),
-      assumed: { slip: PAPER_SLIP, depth: PAPER_DEPTH, minEdge: PAPER_MIN_EDGE, flat: PAPER_FLAT } };
+      assumed: { slip: PAPER_SLIP, depth: PAPER_DEPTH, minEdge: PAPER_MIN_EDGE, flat: PAPER_FLAT },
+      strategies: await this.candleReport(), liveStrategy: this.liveConfig().strategy };
+  }
+  async candleReport() {
+    const out = [{ name: "model", label: "settle model", ...paperSim((await this.ctx.storage.get(PAPER_KEY)) || [], { flat: PAPER_FLAT }) }];
+    for (const [name, S] of Object.entries(CANDLE_STRATS)) {
+      const bets = (await this.ctx.storage.get("cpaper:" + name)) || [];
+      out.push({ name, label: S.label, about: S.about, open: bets.filter(b => !b.out).length, ...paperSim(bets, { flat: PAPER_FLAT }) });
+    }
+    return out;
   }
   async settled(series, limit) {
     if (!this.resCache) this.resCache = new Map();
@@ -647,7 +675,7 @@ function lastTrade(j) {
   return best;
 }
 let LIVE_RETRY_MS = 1000;
-const RELAY_VERSION = "2026-11-26.desk";   // shown on /status; bump on relay changes
+const RELAY_VERSION = "2026-11-26.candles";   // shown on /status; bump on relay changes
 export function _setLiveRetryMs(ms) { LIVE_RETRY_MS = ms; }   // tests only
 // Kalshi order book -> Yes quote. The book lists bids only: best Yes ask = 1 - best No bid. Dollar or cent fields.
 function quoteFromBook(j) {
@@ -673,6 +701,51 @@ function paperDecide(q, bid, ask, askSize, bidSize) {
   const b = y.edge >= n.edge ? y : n;
   if (!(b.edge >= PAPER_MIN_EDGE) || b.cost >= 1) return null;
   return { side: b.side, price: +b.price.toFixed(3), fee: +b.fee.toFixed(4), q: +b.q.toFixed(3), edge: +b.edge.toFixed(3), kelly: +(b.edge / (1 - b.cost) / 2).toFixed(4), depth: b.depth };   // half Kelly
+}
+// ---- candle strategies (1-minute candles built from the official index the relay records each second)
+function candles1m(pts, nowS, n) {           // the last n CLOSED 1-minute candles, oldest first
+  const end = Math.floor(nowS / 60) * 60, start = end - n * 60, out = []; let cur = null;
+  for (const [t, v] of pts) {
+    if (t < start || t >= end) continue;
+    const m = Math.floor(t / 60) * 60;
+    if (!cur || cur.t !== m) { cur = { t: m, o: v, h: v, l: v, c: v }; out.push(cur); } else { cur.h = Math.max(cur.h, v); cur.l = Math.min(cur.l, v); cur.c = v; }
+  }
+  return out;
+}
+const green = c => c.c > c.o, red = c => c.c < c.o, body = c => Math.abs(c.c - c.o);
+const CANDLE_STRATS = {
+  momentum: { label: "3-candle momentum", about: "three 1-min candles the same color: bet it continues",
+    fn: cs => { const l = cs.slice(-3); if (l.length < 3) return null;
+      return l.every(green) ? { dir: 1, why: "3 green 1-min candles in a row" } : l.every(red) ? { dir: -1, why: "3 red 1-min candles in a row" } : null; } },
+  engulfing: { label: "engulfing", about: "last candle's body swallows the one before, opposite color",
+    fn: cs => { if (cs.length < 2) return null; const a = cs[cs.length - 2], b = cs[cs.length - 1];
+      if (red(a) && green(b) && b.o <= a.c && b.c >= a.o && body(b) > body(a)) return { dir: 1, why: "bullish engulfing on the last 1-min candle" };
+      if (green(a) && red(b) && b.o >= a.c && b.c <= a.o && body(b) > body(a)) return { dir: -1, why: "bearish engulfing on the last 1-min candle" };
+      return null; } },
+  hammer: { label: "hammer / shooting star", about: "long wick rejecting a move: bet the other way",
+    fn: cs => { const c = cs[cs.length - 1]; if (!c) return null; const r = c.h - c.l, b = body(c); if (!(r > 0)) return null;
+      const lo = Math.min(c.o, c.c) - c.l, up = c.h - Math.max(c.o, c.c);
+      if (lo >= 2 * b && lo >= 0.6 * r && up <= 0.15 * r) return { dir: 1, why: "hammer: long lower wick on the last 1-min candle" };
+      if (up >= 2 * b && up >= 0.6 * r && lo <= 0.15 * r) return { dir: -1, why: "shooting star: long upper wick on the last 1-min candle" };
+      return null; } },
+  breakout: { label: "5-candle breakout", about: "close beyond the last 5 candles' range: bet it keeps going",
+    fn: cs => { if (cs.length < 6) return null; const c = cs[cs.length - 1], prev = cs.slice(-6, -1);
+      const hi = Math.max(...prev.map(x => x.h)), lo = Math.min(...prev.map(x => x.l));
+      return c.c > hi ? { dir: 1, why: "closed above the last 5 candles' high" } : c.c < lo ? { dir: -1, why: "closed below the last 5 candles' low" } : null; } },
+  fade: { label: "big-candle fade", about: "a candle 2.5× the usual size: bet it snaps back",
+    fn: cs => { if (cs.length < 11) return null; const c = cs[cs.length - 1], prev = cs.slice(-11, -1);
+      const avg = prev.reduce((s, x) => s + (x.h - x.l), 0) / prev.length;
+      if (!(avg > 0) || c.h - c.l < 2.5 * avg || body(c) === 0) return null;
+      return green(c) ? { dir: -1, why: `big green candle (${((c.h - c.l) / avg).toFixed(1)}× usual): fade it` } : { dir: 1, why: `big red candle (${((c.h - c.l) / avg).toFixed(1)}× usual): fade it` }; } }
+};
+const CANDLE_TILT = 0.08;                   // a signal moves the model's odds 8 points its way
+// A strategy bets only when it has a signal AND, after tilting the model's odds its way, its side has the usual 3-pt edge.
+function candleDecide(name, cs, modelP, quote) {
+  const S = CANDLE_STRATS[name]; if (!S || modelP == null || !quote) return null;
+  const sig = S.fn(cs); if (!sig) return null;
+  const p = Math.min(0.99, Math.max(0.01, modelP + CANDLE_TILT * sig.dir));
+  const d = paperDecide(p, quote.bid, quote.ask, quote.askSize, quote.bidSize);
+  return { sig, p, d: d && d.side === (sig.dir > 0 ? "yes" : "no") ? d : null };
 }
 // The best side and its edge even when it's too small to bet (for the Desk's log).
 function paperEdge(q, bid, ask) {
@@ -821,7 +894,7 @@ function liveOrderResult(res, side) { // V2 create-order response -> our order r
   return { orderId: res.order_id || null, filled, status: filled > 0 ? (rem > 0 ? "partly filled" : "filled") : "not filled",
     ...(avgYes != null && filled > 0 ? { avg: +(side === "yes" ? avgYes : 1 - avgYes).toFixed(4) } : {}), ...(fee != null && filled > 0 ? { feeEach: fee } : {}) };
 }
-export { paperEdge, lastTrade, yesFromMarket, quoteFromBook, paperDecide, paperSim, paperBreakdown, paperDaily, liveResult, liveAccount, liveGate, liveSize, parseBalance, parseShardBalances, shardBalance, manualSpentToday, parseFilled, parseFills, snapPrice, liveOrderBody, liveOrderResult };
+export { candles1m, CANDLE_STRATS, candleDecide, paperEdge, lastTrade, yesFromMarket, quoteFromBook, paperDecide, paperSim, paperBreakdown, paperDaily, liveResult, liveAccount, liveGate, liveSize, parseBalance, parseShardBalances, shardBalance, manualSpentToday, parseFilled, parseFills, snapPrice, liveOrderBody, liveOrderResult };
 export async function fetchBook(coin) {
   if (Date.now() >= cbBackoff.until) {
     try {

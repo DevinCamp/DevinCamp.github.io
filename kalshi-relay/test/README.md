@@ -10,3 +10,4 @@
     node test/live.test.mjs   # live trading: sizing, safety gates, signed orders, settlement, stop/resume (mocked Kalshi)
     node test/manual.test.mjs # app quote + BUY UP/DOWN: caps, price guard, shard balance, settlement (mocked Kalshi)
     node test/desk.test.mjs   # Desk decision log: skips with reasons, paper/live bets, holds, settlements, app buys, /desklog route
+    node test/candles.test.mjs # candle strategies: 1-min candles, each pattern, betting rule, paper records, LIVE_STRATEGY

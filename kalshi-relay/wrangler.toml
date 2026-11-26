@@ -9,6 +9,7 @@
 #   KALSHI_TRADE_PRIVATE_KEY  – that key's private key
 # Optional limits (Secrets too): LIVE_BUDGET (default 25 $), LIVE_MAX_STAKE (0.10, never above 0.20),
 #   LIVE_DAILY_LOSS (0.20 of budget), LIVE_FLOOR (10 $), LIVE_MAX_ORDERS_DAY (30), LIVE_HORIZONS ("300" seconds before close)
+#   LIVE_STRATEGY: unset = the settle model; or a candle strategy: momentum | engulfing | hammer | breakout | fade
 # Buying from the app (BUY UP / BUY DOWN, uses the same trading key): on unless MANUAL_TRADING="off".
 #   MANUAL_MAX_SPEND (10 $ per tap, never above 50), MANUAL_DAILY_MAX (50 $ a day). Fills never above the price shown + 2c.
 name = "kalshi-relay"
