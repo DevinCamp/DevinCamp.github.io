@@ -951,7 +951,7 @@ function paperHtml() {
   if (!st.cps) diag = "No checkpoints recorded yet. The relay needs about 16 minutes of index history after each update.";
   else if (!st.book) diag = `<b class="down">${st.cps} checkpoints, but the relay couldn't read Kalshi's live order book${st.lastErr ? ` (${st.lastErr})` : ""}.</b> No paper bets until that works.`;
   else diag = `${st.cps} checkpoints · ${st.book} live order-book quotes` + (st.bookFail ? ` · ${st.bookFail} failed` : "") +
-    (st.stale ? ` · ${st.stale} skipped as stale` : "") + (st.warmup ? ` · ${st.warmup} skipped while the relay warmed up` : "") +
+    (st.stale ? ` · ${st.stale} skipped as stale` : "") + (st.warmup ? ` · ${st.warmup} skipped for gaps in the index history (restarts)` : "") + (st.oneSided ? ` · ${st.oneSided} skipped in decided rounds (one-sided book)` : "") +
     ` · ${P.settled || 0} bets settled${P.open ? `, ${P.open} waiting` : ""}` +
     (st.sized < st.book ? ` · <b class="down">book sizes missing (assuming ${A.depth} contracts)</b>` : "") +
     ((P.settled || 0) < 300 ? ` · <b>${P.settled || 0} of 300+ bets needed before trusting any result</b>` : "");

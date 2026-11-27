@@ -151,24 +151,27 @@ export class Relay extends DurableObject {
     await this.ctx.storage.put("paperstat3", st);
   }
   async paperCheckpointInner(close, T, sm, listQ, nowS = Date.now() / 1000) {
-    if (!this.bootAt) this.bootAt = Date.now();
     const st = (await this.ctx.storage.get("paperstat3")) || { cps: 0, book: 0, bookFail: 0, stale: 0, warmup: 0, sized: 0, diffN: 0, diffSum: 0, diff5: 0 };
     st.cps++; st.at = Math.floor(Date.now() / 1000);
     let bq = null, err = "";
     try { bq = await this.kalshiBook("BTC-USD", close); } catch (e) { err = String(e.message || e); }
-    if (!bq || bq.bid == null || bq.ask == null) { st.bookFail++; if (err) st.lastErr = err.slice(0, 160); await this.ctx.storage.put("paperstat3", st);
-      await this.deskLog({ kind: "ERROR", what: `${T / 60}-min check`, why: "no live Kalshi quote" + (err ? ": " + err.slice(0, 80) : "") }); return null; }
+    if (bq && (bq.bid == null || bq.ask == null)) {        // one side of the book is empty: the round is as good as decided, nothing to buy
+      st.oneSided = (st.oneSided || 0) + 1; await this.ctx.storage.put("paperstat3", st);
+      await this.deskLog({ kind: "SKIP", what: `${T / 60}-min check`, why: `market one-sided (${bq.bid == null ? "no bids" : "no offers"} at ${fmtC(bq.yes)}): round already decided` }); return null; }
+    if (!bq) { st.bookFail++; if (err) st.lastErr = err.slice(0, 160); await this.ctx.storage.put("paperstat3", st);
+      await this.deskLog({ kind: "ERROR", what: `${T / 60}-min check`, why: "no live Kalshi quote" + (err ? ": " + err.slice(0, 80) : ": market not listed or book empty") }); return null; }
     st.book++; if (bq.bidSize != null && bq.askSize != null) st.sized++;
     if (listQ && listQ.yes != null) { const d = Math.abs(listQ.yes - bq.yes); st.diffN++; st.diffSum = +(st.diffSum + d).toFixed(4); if (d > 0.05) st.diff5++;
       st.lastCmp = { at: Math.floor(Date.now() / 1000), t: T, list: [listQ.bid, listQ.ask], book: [bq.bid, bq.ask], bookSize: [bq.bidSize, bq.askSize] };
       st.cmps = [...(st.cmps || []), st.lastCmp].slice(-5); }
     const pts = this.hist.get("BRTI") || [], ixAge = pts.length ? Date.now() / 1000 - pts[pts.length - 1][0] : 1e9;
     let skip = null;
-    if (Date.now() - this.bootAt < PAPER_WARMUP_MS) { st.warmup++; skip = "warmup"; }
+    const gap = histGap(pts, close - 960, nowS);             // the model needs this round's target minute and the last 10 min, unbroken
+    if (gap) { st.warmup++; skip = "warmup"; }
     else if (bq.ms > PAPER_MAX_QUOTE_MS || ixAge > PAPER_MAX_INDEX_AGE) { st.stale++; skip = "stale"; }
     await this.ctx.storage.put("paperstat3", st);
     const chk = `${T / 60}-min check`;
-    if (skip === "warmup") { await this.deskLog({ kind: "SKIP", what: chk, why: "relay warming up (20 min after a restart)" }); return bq; }
+    if (skip === "warmup") { await this.deskLog({ kind: "SKIP", what: chk, why: `index history has a ${gap} s gap this round (relay restart or feed drop)` }); return bq; }
     if (skip) { await this.deskLog({ kind: "SKIP", what: chk, why: bq.ms > PAPER_MAX_QUOTE_MS ? `quote too slow (${bq.ms} ms)` : `index data ${Math.round(ixAge)} s old` }); return bq; }
     const pb = await this.paperBet(close, T, sm.p, bq, { listYes: listQ ? listQ.yes : null, ms: bq.ms, ixAge: +ixAge.toFixed(1) });   // model only
     if (pb && pb.status === "noedge") await this.deskLog({ kind: "SKIP", what: `${chk} · model ${fmtPct(sm.p)} UP`,
@@ -590,9 +593,11 @@ export class Relay extends DurableObject {
   async alarm() {
     await this.ctx.storage.setAlarm(Date.now() + 15000);
     await this.ensureUpstream();
+    try { await this.saveHist(); } catch {}
     try { await this.signalTick(); this.sigErr = ""; } catch (err) { this.sigErr = String(err && err.message || err); }
   }
   async ensureUpstream() {
+    await this.loadHist();
     if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now() + 15000);
     if (!this.env.KALSHI_KEY_ID || !this.env.KALSHI_PRIVATE_KEY) { if (this.upState !== "off") this.setState("off", "Kalshi key not set (push alerts still work)"); return; }
     if (this.up || this.connecting) return this.connecting;
@@ -624,6 +629,24 @@ export class Relay extends DurableObject {
       this.up = null;
       this.setState("error", String(err && err.message || err));
     }
+  }
+  // The last hour of each index is saved once a minute, so a restart (deploy, eviction) only loses the seconds
+  // in between instead of sitting out ~20 minutes while history rebuilds.
+  async loadHist() {
+    if (this.histLoaded) return; this.histLoaded = true;
+    try {
+      const saved = await this.ctx.storage.list({ prefix: "ixh:" }), cut = Date.now() / 1000 - KEEP_SEC;
+      for (const [k, v] of saved) {
+        const id = k.slice(4), old = unpackHist(v).filter(p => p[0] >= cut), cur = this.hist.get(id) || [];
+        const first = cur.length ? cur[0][0] : Infinity;
+        this.hist.set(id, [...old.filter(p => p[0] < first), ...cur]);
+      }
+    } catch {}
+  }
+  async saveHist(nowMs = Date.now()) {
+    if (this.histSavedAt && nowMs - this.histSavedAt < 60000) return; this.histSavedAt = nowMs;
+    const cut = nowMs / 1000 - HIST_SAVE_SEC;
+    for (const [id, h] of this.hist) if (h.length) await this.ctx.storage.put("ixh:" + id, packHist(h.filter(p => p[0] >= cut)));
   }
   onUpstream(raw) {
     let m; try { m = JSON.parse(raw); } catch { return; }
@@ -687,7 +710,7 @@ function yesFromMarket(m) { const q = quoteFromMarket(m); return q ? q.yes : nul
 // Deliberately pessimistic: fills at the ask plus 1 cent of slippage, limited to the quantity actually shown at that price.
 const PAPER_MIN_EDGE = 0.03, PAPER_SLIP = 0.01, PAPER_DEPTH = 20, PAPER_FLAT = 25;
 const PAPER_KEY = "paper3:BTC-USD";                       // record using live order-book quotes (paper2 = market-list quotes)
-const PAPER_WARMUP_MS = 20 * 60000, PAPER_MAX_QUOTE_MS = 1500, PAPER_MAX_INDEX_AGE = 5, TRADE_FRESH_S = 30;
+const HIST_MAX_GAP = 10, HIST_SAVE_SEC = 3600, PAPER_MAX_QUOTE_MS = 1500, PAPER_MAX_INDEX_AGE = 5, TRADE_FRESH_S = 30;
 // Most recent trade in a Kalshi trades response: Yes price (dollars) and time (unix s). Dollar or cent fields.
 function lastTrade(j) {
   let best = null;
@@ -700,7 +723,7 @@ function lastTrade(j) {
   return best;
 }
 let LIVE_RETRY_MS = 1000;
-const RELAY_VERSION = "2026-11-26.daily";   // shown on /status; bump on relay changes
+const RELAY_VERSION = "2026-11-27.warmup";   // shown on /status; bump on relay changes
 export function _setLiveRetryMs(ms) { LIVE_RETRY_MS = ms; }   // tests only
 // Kalshi order book -> Yes quote. The book lists bids only: best Yes ask = 1 - best No bid. Dollar or cent fields.
 function quoteFromBook(j) {
@@ -811,6 +834,17 @@ function luckCheck(bets) {
   const wr = w / n, be = cost / n, se = Math.sqrt(Math.max(wr * (1 - wr), be * (1 - be)) / n), z = se > 0 ? (wr - be) / se : 0;
   const verdict = n < LUCK_MIN_BETS ? "too few" : z >= 2 ? "edge" : z <= -2 ? "losing" : "luck";
   return { breakEven: +be.toFixed(3), z: +z.toFixed(2), verdict };
+}
+// Compact storage form for per-second history: start second, then [second offset, value] pairs.
+function packHist(h) { if (!h.length) return { t0: 0, p: [] }; const t0 = h[0][0]; return { t0, p: h.map(([t, v]) => [t - t0, v]) }; }
+function unpackHist(o) { return o && Array.isArray(o.p) ? o.p.map(([d, v]) => [o.t0 + d, v]) : []; }
+// Largest hole (seconds) in per-second history between `from` and `to`, counting the edges; 0 when it's unbroken
+// (no step longer than HIST_MAX_GAP). Replaces a fixed warm-up timer: after a restart the saved history fills in.
+function histGap(pts, from, to) {
+  let prev = from, worst = 0;
+  for (const [t] of pts) { if (t < from) continue; if (t > to) break; if (t - prev > worst) worst = t - prev; prev = t; }
+  if (to - prev > worst) worst = to - prev;
+  return worst > HIST_MAX_GAP ? Math.round(worst) : 0;
 }
 // One UTC day's standings: flat-stake P&L per strategy, best first, as a push title + body.
 function dailyStandings(sets, day) {
@@ -940,7 +974,7 @@ function liveOrderResult(res, side) { // V2 create-order response -> our order r
   return { orderId: res.order_id || null, filled, status: filled > 0 ? (rem > 0 ? "partly filled" : "filled") : "not filled",
     ...(avgYes != null && filled > 0 ? { avg: +(side === "yes" ? avgYes : 1 - avgYes).toFixed(4) } : {}), ...(fee != null && filled > 0 ? { feeEach: fee } : {}) };
 }
-export { candles1m, luckCheck, dailyStandings, CANDLE_STRATS, candleDecide, paperEdge, lastTrade, yesFromMarket, quoteFromBook, paperDecide, paperSim, paperBreakdown, paperDaily, liveResult, liveAccount, liveGate, liveSize, parseBalance, parseShardBalances, shardBalance, manualSpentToday, parseFilled, parseFills, snapPrice, liveOrderBody, liveOrderResult };
+export { candles1m, histGap, packHist, unpackHist, luckCheck, dailyStandings, CANDLE_STRATS, candleDecide, paperEdge, lastTrade, yesFromMarket, quoteFromBook, paperDecide, paperSim, paperBreakdown, paperDaily, liveResult, liveAccount, liveGate, liveSize, parseBalance, parseShardBalances, shardBalance, manualSpentToday, parseFilled, parseFills, snapPrice, liveOrderBody, liveOrderResult };
 export async function fetchBook(coin) {
   if (Date.now() >= cbBackoff.until) {
     try {

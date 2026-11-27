@@ -2,7 +2,7 @@
 import fs from "fs"; import os from "os"; import path from "path"; import assert from "assert";
 const src = fs.readFileSync(new URL("../src/index.js", import.meta.url), "utf8").replace(/^import .*$/m, "class DurableObject {}");
 const f = path.join(os.tmpdir(), "relay_mod_paper.mjs"); fs.writeFileSync(f, src);
-const { paperDecide, paperSim, paperBreakdown, paperDaily, yesFromMarket, quoteFromBook, lastTrade, Relay } = await import(f);
+const { paperDecide, paperSim, paperBreakdown, paperDaily, yesFromMarket, quoteFromBook, lastTrade, histGap, packHist, unpackHist, Relay } = await import(f);
 
 // ---- decision
 assert.equal(paperDecide(0.5, 0.49, 0.51), null, "no edge, no bet");
@@ -73,9 +73,36 @@ const pb = mem2.get("paper3:BTC-USD");
 assert(pb && pb.length === 1 && pb[0].side === "yes", "bets on the live book");
 assert.equal(pb[0].price, 0.58, "live ask 57c + 1c, not the list's 32c"); assert.equal(pb[0].depth, 80); assert.equal(pb[0].listYes, 0.31);
 
-[r2, mem2] = mkRelay(); r2.hist = new Map([["BRTI", pts]]); r2.bootAt = Date.now();          // just restarted
+[r2, mem2] = mkRelay(); r2.hist = new Map([["BRTI", pts.filter(p => p[0] < cl - 400 || p[0] > cl - 330)]]);   // restarted mid-round: a 70 s hole
 globalThis.fetch = route(); await r2.checkpoints("BTC-USD", now);
-assert.equal(mem2.get("paperstat3").warmup, 1); assert.equal(mem2.get("paper3:BTC-USD"), undefined, "no bets during warm-up");
+assert.equal(mem2.get("paperstat3").warmup, 1); assert.equal(mem2.get("paper3:BTC-USD"), undefined, "no bets with a hole in this round's history");
+[r2, mem2] = mkRelay(); r2.hist = new Map([["BRTI", pts.filter(p => p[0] < cl - 1500 || p[0] > cl - 1000)]]);  // a hole before this round doesn't matter
+globalThis.fetch = route(); await r2.checkpoints("BTC-USD", now);
+assert.equal(mem2.get("paperstat3").warmup, 0); assert.equal(mem2.get("paper3:BTC-USD").length, 1, "bets right after a restart once the round is covered");
+
+// histGap: largest hole between from and to, edges included; small steps (<= 10 s) are fine
+const ser = (a, b, step = 1) => { const o = []; for (let t = a; t <= b; t += step) o.push([t, 1]); return o; };
+assert.equal(histGap(ser(0, 1000), 100, 900), 0);
+assert.equal(histGap(ser(0, 1000, 5), 100, 900), 0, "a tick every 5 s is unbroken");
+assert.equal(histGap([...ser(0, 400), ...ser(460, 1000)], 100, 900), 60);
+assert.equal(histGap(ser(300, 1000), 100, 900), 200, "history starting late = a hole at the start");
+assert.equal(histGap(ser(0, 850), 100, 900), 50, "history ending early = a hole at the end");
+assert.equal(histGap([], 100, 900), 800);
+// packHist / unpackHist round-trip
+const hh = [[1795700000, 60537.26], [1795700001, 60537.5], [1795700003, 60538]];
+assert.deepEqual(unpackHist(packHist(hh)), hh); assert.deepEqual(unpackHist(packHist([])), []); assert.deepEqual(unpackHist(null), []);
+// saveHist / loadHist: a restarted relay picks the saved hour back up, merged in front of fresh points
+{
+  const store = new Map(), mkS = () => { const r = Object.create(Relay.prototype); r.env = {}; r.hist = new Map();
+    r.ctx = { storage: { get: async k => store.get(k), put: async (k, v) => { store.set(k, JSON.parse(JSON.stringify(v))); }, list: async ({ prefix }) => new Map([...store].filter(([k]) => k.startsWith(prefix))) } }; return r; };
+  const n0 = Math.floor(Date.now() / 1000), a = mkS(); a.hist.set("BRTI", ser(n0 - 5000, n0 - 100).map(([t]) => [t, t % 97]));
+  await a.saveHist(); assert(store.has("ixh:BRTI")); const savedLen = unpackHist(store.get("ixh:BRTI")).length;
+  assert(savedLen >= 3500 && savedLen <= 3601, "keeps about the last hour: " + savedLen);
+  a.hist.get("BRTI").push([n0 - 99, 1]); await a.saveHist(); assert.equal(unpackHist(store.get("ixh:BRTI")).length, savedLen, "at most once a minute");
+  const b = mkS(); b.hist.set("BRTI", [[n0 - 10, 5], [n0 - 9, 6]]); await b.loadHist();
+  const h = b.hist.get("BRTI"); assert.equal(h.length, savedLen + 2); assert.deepEqual(h.slice(-2), [[n0 - 10, 5], [n0 - 9, 6]]);
+  assert(h.every((p, i) => !i || p[0] > h[i - 1][0]), "ascending"); await b.loadHist(); assert.equal(b.hist.get("BRTI").length, savedLen + 2, "loads once");
+}
 
 [r2, mem2] = mkRelay(); r2.hist = new Map([["BRTI", pts]]); r2.bootAt = Date.now() - 3600e3;
 globalThis.fetch = route(1600); await r2.checkpoints("BTC-USD", now);                       // slow quote
@@ -85,6 +112,10 @@ assert.equal(mem2.get("paperstat3").stale, 1); assert.equal(mem2.get("paper3:BTC
 globalThis.fetch = async url => String(url).includes("/orderbook") ? new Response("{}", { status: 500 }) : new Response(JSON.stringify(listJson));
 await r2.checkpoints("BTC-USD", now);
 st = mem2.get("paperstat3"); assert.equal(st.bookFail, 1); assert(/500/.test(st.lastErr)); assert.equal(mem2.get("cp:BTC-USD").length, 1, "checkpoint still recorded");
+[r2, mem2] = mkRelay(); r2.hist = new Map([["BRTI", pts]]);                                 // decided round: no offers left on Yes
+globalThis.fetch = async url => new Response(JSON.stringify(String(url).includes("/orderbook") ? { orderbook: { yes: [[99, 500]], no: [] } } : listJson));
+await r2.checkpoints("BTC-USD", now);
+st = mem2.get("paperstat3"); assert.equal(st.oneSided, 1); assert.equal(st.bookFail, 0, "a one-sided book isn't a failure");
 
 // ---- trades check: which quote matches Kalshi's most recent trade
 {
