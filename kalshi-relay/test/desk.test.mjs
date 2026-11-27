@@ -44,9 +44,9 @@ l = log(mem); assert.equal(l.length, 1); assert.equal(l[0].kind, "SKIP");
 assert.match(l[0].what, /^5-min check · model \d+% UP$/); assert.match(l[0].why, /best edge -?\d+\.\d pts \((YES|NO) @ \d+¢\) after fee \+ slippage < 3\.0 pts/);
 
 // warm-up after a restart
-[r, mem] = mk(env, 100060); r.bootAt = Date.now(); globalThis.fetch = kalshi();
+[r, mem] = mk(env, 100060); r.hist.set("BRTI", r.hist.get("BRTI").filter(p => p[0] < cl - 700 || p[0] >= cl - 640)); globalThis.fetch = kalshi();
 await r.checkpoints("BTC-USD", cl - 300);
-assert.deepEqual(log(mem).map(x => [x.kind, x.why]), [["SKIP", "relay warming up (20 min after a restart)"]]);
+assert.deepEqual(log(mem).map(x => [x.kind, x.why]), [["SKIP", "index history has a 61 s gap this round (relay restart or feed drop)"]]);
 
 // stopped from the app: the live side logs a HOLD with the reason
 [r, mem] = mk(env, 100060); mem.set("live", { halted: true, haltReason: "stopped from the app", orders: [] }); globalThis.fetch = kalshi();
